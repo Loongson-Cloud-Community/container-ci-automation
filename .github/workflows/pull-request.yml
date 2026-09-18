@@ -1,0 +1,81 @@
+name: "PR build & push"
+
+on:
+  pull_request:
+    # 任何 PR 都触发：改动项目由 tools/pull_request.py ci-name 动态算出（PR 验证只构建，不推送）
+  push:
+    branches:
+      - main
+    # merge 到 main：项目同样动态算出，构建 + 推送
+
+jobs:
+  ci-name:
+    # 解析 PR 首个变动目录 → dynamic_ci_name（如 library::alpine）
+    runs-on: self-hosted
+    permissions:
+      contents: read        # checkout
+      pull-requests: read   # 读取 PR 文件列表 / 由 commit 反查关联 PR
+    outputs:
+      dynamic_ci_name: ${{ steps.ci.outputs.dynamic_ci_name }}
+      has_change: ${{ steps.ci.outputs.has_change }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          # loongarch64 CI 机器可能是 dnf 或 apt 包管理；本 job 只需 python3 + click（gh 由 runner 提供）
+          SUDO=""; [ "$(id -u)" != "0" ] && SUDO="sudo"
+          if command -v dnf >/dev/null 2>&1; then
+            $SUDO dnf install -y python3 python3-pip
+          else
+            $SUDO apt-get update
+            $SUDO apt-get install -y python3 python3-pip
+          fi
+          python3 -m pip install --break-system-packages click
+
+      - name: 计算 dynamic_ci_name
+        id: ci
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            PR_ID="${{ github.event.pull_request.number }}"
+          else
+            # push 到 main：由 merge commit 反查关联 PR（直接 push 无关联 PR → 跳过）
+            PR_ID=$(gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/pulls" --jq '.[0].number')
+          fi
+
+          if [ -z "$PR_ID" ] || [ "$PR_ID" = "null" ]; then
+            echo "::warning::未找到关联 PR，跳过构建"
+            echo "has_change=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # ci-name 成功时会把 dynamic_ci_name 写入本次步骤的 $GITHUB_OUTPUT
+          # -r 显式传运行所在仓库（fork 里跑时全局默认的 REPOSITORY 会指错）
+          if python3 tools/pull_request.py ci-name "$PR_ID" -r "${{ github.repository }}"; then
+            echo "has_change=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::PR #$PR_ID 无有效变更目录，跳过构建"
+            echo "has_change=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  pr-build:
+    # PR 验证：仅构建不推送（name 里带项目名，便于在 Actions 里辨识）
+    name: "PR 构建（不推送）：${{ needs.ci-name.outputs.dynamic_ci_name }}"
+    needs: ci-name
+    if: github.event_name == 'pull_request' && needs.ci-name.outputs.has_change == 'true'
+    uses: ./.github/workflows/build.yml
+    with:
+      # dynamic_ci_name 是 workflow 名形式（library::alpine），build.py 需要目录形式（library/alpine）
+      project: ${{ replace(needs.ci-name.outputs.dynamic_ci_name, '::', '/') }}
+
+  merge-push:
+    # merge 推送：构建 + 推送（含 build-push.yml 的版本跟踪提交；name 里带项目名）
+    name: "Merge 构建 + 推送：${{ needs.ci-name.outputs.dynamic_ci_name }}"
+    needs: ci-name
+    if: github.event_name == 'push' && needs.ci-name.outputs.has_change == 'true'
+    uses: ./.github/workflows/build-push.yml
+    with:
+      project: ${{ replace(needs.ci-name.outputs.dynamic_ci_name, '::', '/') }}
