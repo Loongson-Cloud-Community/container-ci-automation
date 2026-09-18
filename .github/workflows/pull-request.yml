@@ -17,6 +17,7 @@ jobs:
       pull-requests: read   # 读取 PR 文件列表 / 由 commit 反查关联 PR
     outputs:
       dynamic_ci_name: ${{ steps.ci.outputs.dynamic_ci_name }}
+      project: ${{ steps.ci.outputs.project }}
       has_change: ${{ steps.ci.outputs.has_change }}
     steps:
       - name: Checkout
@@ -52,9 +53,12 @@ jobs:
             exit 0
           fi
 
-          # ci-name 成功时会把 dynamic_ci_name 写入本次步骤的 $GITHUB_OUTPUT
+          # ci-name 成功时会把 dynamic_ci_name 写入本次步骤的 $GITHUB_OUTPUT，并把名字打到 stdout
           # -r 显式传运行所在仓库（fork 里跑时全局默认的 REPOSITORY 会指错）
-          if python3 tools/pull_request.py ci-name "$PR_ID" -r "${{ github.repository }}"; then
+          if NAME=$(python3 tools/pull_request.py ci-name "$PR_ID" -r "${{ github.repository }}"); then
+            # build.py 要目录形式（library/alpine），这里由 workflow 名形式（library::alpine）还原
+            # Actions 表达式没有字符串替换函数，只能在 shell 里转换
+            echo "project=${NAME//::/\/}" >> "$GITHUB_OUTPUT"
             echo "has_change=true" >> "$GITHUB_OUTPUT"
           else
             echo "::warning::PR #$PR_ID 无有效变更目录，跳过构建"
@@ -68,8 +72,8 @@ jobs:
     if: github.event_name == 'pull_request' && needs.ci-name.outputs.has_change == 'true'
     uses: ./.github/workflows/build.yml
     with:
-      # dynamic_ci_name 是 workflow 名形式（library::alpine），build.py 需要目录形式（library/alpine）
-      project: ${{ replace(needs.ci-name.outputs.dynamic_ci_name, '::', '/') }}
+      # project 由 ci-name 作业在 shell 里从 dynamic_ci_name 还原成目录形式后输出
+      project: ${{ needs.ci-name.outputs.project }}
 
   merge-push:
     # merge 推送：构建 + 推送（含 build-push.yml 的版本跟踪提交；name 里带项目名）
@@ -78,4 +82,4 @@ jobs:
     if: github.event_name == 'push' && needs.ci-name.outputs.has_change == 'true'
     uses: ./.github/workflows/build-push.yml
     with:
-      project: ${{ replace(needs.ci-name.outputs.dynamic_ci_name, '::', '/') }}
+      project: ${{ needs.ci-name.outputs.project }}
