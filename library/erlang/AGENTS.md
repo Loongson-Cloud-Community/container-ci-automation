@@ -26,33 +26,39 @@ docker-erlang-otp/
 | 26 | bookworm | archive/ | 3.26 |
 | 27-29 | bookworm/trixie | releases/download/ | 3.27 |
 
-## 模板变量
+## 构建流程
+
+Dockerfile 直接从上游下载，无需模板渲染：
+
+```
+get_versions.sh → 获取最新 OTP 版本
+update.sh       → 下载上游 Dockerfile 到 dockerfiles/{version}/{variant}/
+apply-templates.sh → 空操作（Dockerfile 已就绪）
+build.py        → docker build
+```
+
+## 模板变量（上游 Dockerfile 内部使用）
 
 | 变量 | 说明 | 示例 |
 |------|------|------|
-| {OTP_VERSION} | OTP 版本号 | 28.5.0.4 |
-| {REBAR3_VERSION} | rebar3 版本号 | 3.27.0 |
-| {OTP_DOWNLOAD_URL} | OTP 源码下载 URL | https://github.com/... |
-| {OTP_DOWNLOAD_SHA256} | OTP 源码 SHA256 | efb045f... |
-| {REBAR3_DOWNLOAD_SHA256} | rebar3 SHA256（默认/slim） | 985cae6... |
-| {DEBIAN_VERSION} | Debian 版本 | trixie |
-| {ALPINE_VERSION} | Alpine 版本 | 3.24 |
-| {RUNTIME_DEPS} | 运行时依赖（默认变体） | libodbc2 libsctp1 ... |
-| {BUILD_DEPS} | 构建依赖（默认变体） | unixodbc-dev libsctp-dev |
-| {SLIM_RUNTIME_DEPS} | 运行时依赖（slim 变体） | libodbc2 libssl3t64 libsctp1 |
+| OTP_VERSION | OTP 版本号 | 28.5.0.6 |
+| REBAR3_VERSION | rebar3 版本号 | 3.27.0 |
+| OTP_DOWNLOAD_URL | OTP 源码下载 URL | https://github.com/... |
+| OTP_DOWNLOAD_SHA256 | OTP 源码 SHA256 | 49d7a75... |
+| REBAR3_DOWNLOAD_SHA256 | rebar3 SHA256 | 985cae6... |
+| runtimeDeps | 运行时依赖 | libodbc2 libsctp1 ... |
+| buildDeps | 构建依赖 | unixodbc-dev libsctp-dev |
 
 ## 本地调整
 
-- 所有 FROM 行添加 `lcr.loongnix.cn/` 前缀
-- alpine 变体使用 `lcr.loongnix.cn/alpine:` 而非 `alpine:`
-- 版本元数据从上游 Dockerfile 提取（非 GitHub API）
-- REBAR3 SHA256 在默认/slim 和 alpine 变体间不同
+- FROM 行不需要添加 registry 前缀（Docker 系统配置默认仓库）
+- 只支持构建上游最新版本（按大版本匹配）
 
 ## 构建命令
 
 ```bash
 # 测试单个版本
-python3 tools/build.py --test library/erlang 28.5.0.4
+python3 tools/build.py --test library/erlang 28.5.0.6
 
 # 生产构建
 python3 tools/build.py library/erlang
