@@ -139,26 +139,27 @@ LOONGPATCH
             sed -i "${line_num}r $tmpfile" "$dockerfile"
         fi
         rm -f "$tmpfile"
+    fi
 
-        # Alpine loongarch64 需要 libucontext（musl 没有 swapcontext）
-        if [[ "$template_file" == *alpine* ]]; then
-            local uctx_tmpfile
-            uctx_tmpfile=$(mktemp)
-            cat > "$uctx_tmpfile" <<'UCTXBLOCK'
-        # Install libucontext and set LIBS for PHP 8.2/8.3 on loongarch64
+    # Alpine loongarch64 需要 libucontext（musl 没有 getcontext/makecontext/swapcontext），
+    # 这与 fiber 汇编补丁无关，PHP 8.3+ 走 ucontext 实现时必须链接 libucontext
+    if [[ "$template_file" == *alpine* ]]; then
+        local uctx_tmpfile
+        uctx_tmpfile=$(mktemp)
+        cat > "$uctx_tmpfile" <<'UCTXBLOCK'
+        # Install libucontext and set LIBS for PHP on loongarch64 (musl lacks getcontext/makecontext/swapcontext)
         if [ "$(uname -m)" = "loongarch64" ]; then \
             apk add --no-cache libucontext-dev; \
             export LIBS="-lucontext"; \
         fi; \
 UCTXBLOCK
-            # 插入在 rm -vf /usr/include/iconv.h 之后
-            local iconv_line
-            iconv_line=$(grep -nP 'rm -vf /usr/include/iconv.h' "$dockerfile" | head -1 | cut -d: -f1)
-            if [[ -n "$iconv_line" ]]; then
-                sed -i "${iconv_line}r $uctx_tmpfile" "$dockerfile"
-            fi
-            rm -f "$uctx_tmpfile"
+        # 插入在 rm -vf /usr/include/iconv.h 之后
+        local iconv_line
+        iconv_line=$(grep -nP 'rm -vf /usr/include/iconv.h' "$dockerfile" | head -1 | cut -d: -f1)
+        if [[ -n "$iconv_line" ]]; then
+            sed -i "${iconv_line}r $uctx_tmpfile" "$dockerfile"
         fi
+        rm -f "$uctx_tmpfile"
     fi
 
     echo "  dockerfiles/$V_VERSION/$variant_name/Dockerfile" >&2
