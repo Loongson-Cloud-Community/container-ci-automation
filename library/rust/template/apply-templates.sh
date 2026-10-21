@@ -43,6 +43,7 @@ eval "$(echo "$V" | jq -r '
     "V_SHA256_X86_64_MUSL=\(.sha256_x86_64_musl)",
     "V_SHA256_AARCH64_MUSL=\(.sha256_aarch64_musl)",
     "V_SHA256_PPC64LE_MUSL=\(.sha256_ppc64le_musl)",
+    "V_SHA256_RISCV64_MUSL=\(.sha256_riscv64_musl)",
     "V_SHA256_LOONGARCH64_MUSL=\(.sha256_loongarch64_musl)"
 ')"
 
@@ -65,6 +66,7 @@ SED_ARGS=(
     -e "s/{SHA256_X86_64_MUSL}/$V_SHA256_X86_64_MUSL/g"
     -e "s/{SHA256_AARCH64_MUSL}/$V_SHA256_AARCH64_MUSL/g"
     -e "s/{SHA256_PPC64LE_MUSL}/$V_SHA256_PPC64LE_MUSL/g"
+    -e "s/{SHA256_RISCV64_MUSL}/$V_SHA256_RISCV64_MUSL/g"
     -e "s/{SHA256_LOONGARCH64_MUSL}/$V_SHA256_LOONGARCH64_MUSL/g"
 )
 

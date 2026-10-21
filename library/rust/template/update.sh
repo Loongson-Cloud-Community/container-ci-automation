@@ -52,6 +52,7 @@ SHA256_LOONG64=$(fetch_sha256 "loongarch64-unknown-linux-gnu")
 SHA256_X86_64_MUSL=$(fetch_sha256 "x86_64-unknown-linux-musl")
 SHA256_AARCH64_MUSL=$(fetch_sha256 "aarch64-unknown-linux-musl")
 SHA256_PPC64LE_MUSL=$(fetch_sha256 "powerpc64le-unknown-linux-musl")
+SHA256_RISCV64_MUSL=$(fetch_sha256 "riscv64gc-unknown-linux-musl")
 SHA256_LOONGARCH64_MUSL=$(fetch_sha256 "loongarch64-unknown-linux-musl")
 
 # 合并到 versions.json
@@ -77,6 +78,7 @@ new_data=$(jq -n \
     --arg sha256_x86_64_musl "$SHA256_X86_64_MUSL" \
     --arg sha256_aarch64_musl "$SHA256_AARCH64_MUSL" \
     --arg sha256_ppc64le_musl "$SHA256_PPC64LE_MUSL" \
+    --arg sha256_riscv64_musl "$SHA256_RISCV64_MUSL" \
     --arg sha256_loongarch64_musl "$SHA256_LOONGARCH64_MUSL" \
     '{
         version: $version,
@@ -94,6 +96,7 @@ new_data=$(jq -n \
         sha256_x86_64_musl: $sha256_x86_64_musl,
         sha256_aarch64_musl: $sha256_aarch64_musl,
         sha256_ppc64le_musl: $sha256_ppc64le_musl,
+        sha256_riscv64_musl: $sha256_riscv64_musl,
         sha256_loongarch64_musl: $sha256_loongarch64_musl
     }')
 
