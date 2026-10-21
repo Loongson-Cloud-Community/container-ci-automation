@@ -1,65 +1,44 @@
-# library/erlang — AI Agent 上下文
+# erlang
 
-## 项目信息
+## 上游信息
 
-- **上游仓库**: https://github.com/erlang/docker-erlang-otp.git
-- **迁移范围**: 主版本 24-29（共 6 个大版本）
-- **变体**: debian（默认）、debian-slim、alpine
-- **构建方式**: 从源码编译 OTP，附带 rebar 和 rebar3
+| 字段 | 值 |
+|------|-----|
+| 仓库 | https://github.com/erlang/docker-erlang-otp |
+| 分支 | master |
+| 上次同步 commit | 未记录（历史迁移未保存，下次同步时补记） |
+| 上游渲染方式 | 上游本身就是每主版本一套成品 Dockerfile（无模板渲染） |
 
-## 上游结构
+## 映射表
 
-```
-docker-erlang-otp/
-├── {MAJOR_VERSION}/           # 24/, 25/, ..., 29/
-│   ├── Dockerfile             # 默认变体（buildpack-deps）
-│   ├── slim/Dockerfile        # slim 变体（debian）
-│   └── alpine/Dockerfile      # alpine 变体
-└── generate-stackbrew-library.sh
-```
+| 上游路径 | 本地路径 | 关系 |
+|----------|----------|------|
+| {MAJOR}/Dockerfile | dockerfiles/{version}/debian/Dockerfile | 1:1 拷贝 + sed 替换基础镜像（update.sh 运行时下载） |
+| {MAJOR}/slim/Dockerfile | dockerfiles/{version}/debian-slim/Dockerfile | 1:1 拷贝 + sed 替换 |
+| {MAJOR}/alpine/Dockerfile | dockerfiles/{version}/alpine/Dockerfile | 1:1 拷贝（alpine 不替换） |
+| generate-stackbrew-library.sh | — | 上游已废弃（本地不迁移） |
+| — | template/update.sh | 本地新增（下载 + sed 替换逻辑） |
+| — | template/apply-templates.sh | 本地新增（空操作占位） |
 
-## 版本差异
+注意：本地无 template/Dockerfile-*.template 模板文件，config.yml 中的 template 字段名仅为占位（apply 为空操作，build.py 不校验）。
 
-| 主版本 | 基础镜像 | OTP 下载 URL | REBAR3 |
-|--------|----------|--------------|--------|
-| 24-25 | bullseye | archive/ | 3.23-3.24 |
-| 26 | bookworm | archive/ | 3.26 |
-| 27-29 | bookworm/trixie | releases/download/ | 3.27 |
+## 改动清单
 
-## 构建流程
+- 渲染: 弃用模板方案（4445a21），改为 update.sh 直接下载上游 Dockerfile
+- 基础镜像: 按主版本 sed 替换 FROM 行的 debian 版本（保留 -slim 后缀）：24-25 → bullseye，26-27 → bookworm，28-29 → forky
+- 下载校验: 下载后 head -1 验证文件以 FROM 开头，防止 404 页被当 Dockerfile 构建
+- 版本范围: get_versions.sh 当前仅跟踪主版本 29（24-28 已注释，见脚本内 MAJOR_VERSIONS）
 
-Dockerfile 直接从上游下载，无需模板渲染：
+## 变量表
 
-```
-get_versions.sh → 获取最新 OTP 版本
-update.sh       → 下载上游 Dockerfile 到 dockerfiles/{version}/{variant}/
-apply-templates.sh → 空操作（Dockerfile 已就绪）
-build.py        → docker build
-```
+无本地模板占位符（Dockerfile 为上游成品，变量都是上游 Dockerfile 内部的 ARG/ENV）。
 
-## 模板变量（上游 Dockerfile 内部使用）
+## 上游同步清单
 
-| 变量 | 说明 | 示例 |
-|------|------|------|
-| OTP_VERSION | OTP 版本号 | 28.5.0.6 |
-| REBAR3_VERSION | rebar3 版本号 | 3.27.0 |
-| OTP_DOWNLOAD_URL | OTP 源码下载 URL | https://github.com/... |
-| OTP_DOWNLOAD_SHA256 | OTP 源码 SHA256 | 49d7a75... |
-| REBAR3_DOWNLOAD_SHA256 | rebar3 SHA256 | 985cae6... |
-| runtimeDeps | 运行时依赖 | libodbc2 libsctp1 ... |
-| buildDeps | 构建依赖 | unixodbc-dev libsctp-dev |
+1. 上游新增主版本目录时，在 update.sh 的 DEBIAN_VERSION case 与 VARIANT_PATHS 中补充
+2. 上游改用其他基础镜像名时，核对 sed 替换正则 `^(FROM (buildpack-deps|debian):)...` 是否仍匹配
+3. 需恢复多主版本跟踪时，改 get_versions.sh 的 MAJOR_VERSIONS
 
-## 本地调整
+## 已知问题
 
-- FROM 行不需要添加 registry 前缀（Docker 系统配置默认仓库）
-- 只支持构建上游最新版本（按大版本匹配）
-
-## 构建命令
-
-```bash
-# 测试单个版本
-python3 tools/build.py --test library/erlang 28.5.0.6
-
-# 生产构建
-python3 tools/build.py library/erlang
-```
+- 无未解决问题

@@ -1,48 +1,44 @@
 # httpd
 
-## 上游
+## 上游信息
 
-- **仓库**: https://github.com/docker-library/httpd
-- **当前版本**: 2.4.68
+| 字段 | 值 |
+|------|-----|
+| 仓库 | https://github.com/docker-library/httpd |
+| 分支 | master |
+| 上次同步 commit | 未记录（历史迁移未保存，下次同步时补记） |
+| 上游渲染方式 | update.sh 直接 sed 改成品 Dockerfile 中的版本号 |
 
-## 上游结构
+## 映射表
 
-```
-2.4/
-├── Dockerfile                # Debian 变体
-├── alpine/Dockerfile         # Alpine 变体
-└── httpd-foreground
-update.sh                     # sed 直接改 Dockerfile 中的版本号
-```
+| 上游路径 | 本地路径 | 关系 |
+|----------|----------|------|
+| 2.4/Dockerfile | template/Dockerfile-debian.template | 拆分/重写（版本号改为 {VAR} 占位符） |
+| 2.4/alpine/Dockerfile | template/Dockerfile-alpine.template | 拆分/重写 |
+| update.sh | template/update.sh | 重写（wget 取 sha256 + 补丁列表） |
+| httpd-foreground | template/httpd-foreground | 1:1 拷贝 |
+| — | template/apply-templates.sh | 本地新增（jq 提取 + sed 渲染） |
 
-## 本地映射
+## 改动清单
 
-| 上游 | 本地 | 说明 |
-|------|------|------|
-| `2.4/Dockerfile` | `template/Dockerfile-debian.template` | `{VERSION}` `{SHA256}` `{DEBIAN_VERSION}` `{PATCHES}` |
-| `2.4/alpine/Dockerfile` | `template/Dockerfile-alpine.template` | `{VERSION}` `{SHA256}` `{ALPINE_VERSION}` `{PATCHES}` |
-| `update.sh` | `template/update.sh` | wget 获取 sha256 + 补丁信息 |
-| — | `template/apply-templates.sh` | jq 提取 + sed 渲染 |
+- 模板: 上游成品 Dockerfile 中的硬编码值替换为占位符，模板内容独立于版本
+- 基础镜像: debian=debian:{DEBIAN_VERSION}-slim、alpine=alpine:{ALPINE_VERSION}，值集中在 update.sh
+- 补丁: {PATCHES} 由 update.sh 从 Apache `patches/apply_to_{VERSION}/` 目录检测生成
 
-## 模板变量
+## 变量表
 
-| 占位符 | 来源 |
-|--------|------|
-| `{VERSION}` | go.dev API / Apache 下载站 |
-| `{SHA256}` | `httpd-$VERSION.tar.bz2.sha256` |
-| `{ALPINE_VERSION}` | update.sh 顶部定义 |
-| `{DEBIAN_VERSION}` | update.sh 顶部定义 |
-| `{PATCHES}` | `patches/apply_to_$VERSION/` 目录 |
+| 占位符 | 来源 | 说明 |
+|--------|------|------|
+| {SHA256} | update.sh | `httpd-$VERSION.tar.bz2.sha256` |
+| {PATCHES} | update.sh | 该版本适用的补丁文件列表（可为空） |
+| {DEBIAN_VERSION} / {ALPINE_VERSION} | update.sh | 基础镜像版本 |
 
-## 上游更新
+## 上游同步清单
 
-1. 对比上游 `2.4/Dockerfile` 和本地 `template/Dockerfile-debian.template`
-2. 对比上游 `2.4/alpine/Dockerfile` 和本地 `template/Dockerfile-alpine.template`
-3. 合并上游变更，保留 `{VAR}` 占位符
-4. 检查是否有新增环境变量需要添加为模板变量
+1. 对比上游 `2.4/Dockerfile` 与本地 Dockerfile-debian.template
+2. 对比上游 `2.4/alpine/Dockerfile` 与本地 Dockerfile-alpine.template
+3. 合并上游变更时保留 {VAR} 占位符；新增环境变量需同步加到 update.sh 与 apply-templates.sh
 
-## 构建
+## 已知问题
 
-```bash
-python3 tools/build.py library/httpd
-```
+- 无未解决问题

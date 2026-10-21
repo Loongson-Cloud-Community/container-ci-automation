@@ -1,66 +1,36 @@
-# alpine — AGENTS.md
+# alpine
 
-## 模板上游信息
+## 上游信息
 
 | 字段 | 值 |
 |------|-----|
-| 上游仓库 | cz.alpinelinux.org |
-| 上游分支 | latest-stable |
-| 上次同步 | 无（直接下载 minirootfs） |
+| 仓库 | https://gitlab.alpinelinux.org/alpine/aports（发行版源码）；下载站 cz.alpinelinux.org |
+| 分支 | latest-stable |
+| 上次同步 commit | 不适用（无 Dockerfile 派生，直接下载官方 minirootfs 产物） |
+| 上游渲染方式 | 无——本地模板是自创的打包脚本，非上游 Dockerfile 派生 |
 
-## 本地适应性调整
+## 映射表（输入产物来源 → 本地用途）
 
-### 特殊说明
+| 输入产物 | 获取方式 | 本地用途 |
+|----------|----------|----------|
+| alpine-minirootfs-{version}-loongarch64.tar.gz | update.sh 从 cz.alpinelinux.org 下载 | template/apply-templates.sh 复制到 dockerfiles/{version}/alpine/ 供 buildx ADD |
 
-alpine 项目直接从 Alpine 官方下载 minirootfs，不是从上游 Dockerfile 构建。
-模板仅用于打包 minirootfs 为 Docker 镜像。
+下载 URL 结构：`https://cz.alpinelinux.org/alpine/v{minor}/releases/loongarch64/alpine-minirootfs-{version}-loongarch64.tar.gz`
+（目录段必须用 minor 版本 `v3.24`，用 full version 或 latest-stable 会 404——见 docs/03）
 
-### Dockerfile-alpine.template
+## 改动清单
 
-- **FROM scratch**: 从零开始构建
-- **ADD rootfs.tar.gz**: 添加 minirootfs 压缩包
-- **无上游对比**: 完全自定义
+- 模板: Dockerfile-alpine.template 为本地自创（FROM scratch + ADD rootfs.tar.gz），非上游派生
+- 逻辑: update.sh 校验版本格式 a.b.c、按 minor 拼 URL 下载 rootfs 到 template/out/
+- 逻辑: apply-templates.sh 渲染 {VERSION}/{MINOR_VERSION}/{MAJOR_VERSION} 并复制 rootfs 到构建目录
 
-## 构建流程
+## 变量表
 
-1. get_versions.sh: 从 cz.alpinelinux.org 获取最新版本
-2. update.sh: 下载 minirootfs
-3. apply-templates.sh: 生成 Dockerfile（FROM scratch + ADD）
-4. docker buildx build: 构建 Docker 镜像
-5. docker push: 推送到 registry
-
-## 版本格式
-
-版本格式为: `3.24.1`
-
-- 3: 主版本号
-- 3.24: 次版本号
-- 3.24.1: 完整版本号
-
-## Tag 命名
-
-每个版本生成以下 tags:
-
-- `3`: 主版本号
-- `3.24`: 次版本号
-- `3.24.1`: 完整版本号
-- `latest`: 最新版本
+| 占位符 | 来源 | 说明 |
+|--------|------|------|
+| {MINOR_VERSION} | apply-templates.sh（由 $1 截取） | 次版本号（如 3.24） |
+| {MAJOR_VERSION} | apply-templates.sh（由 $1 截取） | 主版本号（如 3） |
 
 ## 已知问题
 
-| 问题 | 影响 | 解决方案 |
-|------|------|----------|
-| minirootfs 下载慢 | CI 考时长 | 使用缓存 |
-
-## 构建信息
-
-- **构建命令**: `python3 tools/build.py library/alpine`
-- **Dry run**: `DRY_RUN=true python3 tools/build.py library/alpine`
-- **Registry**: `lcr.loongnix.cn`
-- **Repository**: `library/alpine`
-- **平台**: `linux/loong64`
-
-## 依赖
-
-- wget
-- docker buildx
+- minirootfs 下载速度慢，拖长 CI 耗时（未解决；可考虑缓存）

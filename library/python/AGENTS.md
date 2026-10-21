@@ -1,69 +1,48 @@
 # python
 
-## 上游
+## 上游信息
 
-- **仓库**: https://github.com/docker-library/python
-- **当前版本**: 3.14.6 (latest)
-- **活跃版本**: 3.10, 3.11, 3.12, 3.13, 3.14
-- **构建方式**: 从源码编译（Python 官方只提供源码 tarball）
+| 字段 | 值 |
+|------|-----|
+| 仓库 | https://github.com/docker-library/python |
+| 分支 | master |
+| 上次同步 commit | 未记录（历史迁移未保存，下次同步时补记） |
+| 上游渲染方式 | jq-template.awk（Dockerfile-linux.template，含复杂条件逻辑） |
 
-## 上游结构
+## 映射表
 
-```
-Dockerfile-linux.template    # jq-template.awk 语法，含复杂条件逻辑
-Dockerfile-windows.template  # Windows 变体（本地不迁移）
-versions.sh                  # 从 cpython git tags + python.org 获取版本
-versions.json                # versions.sh 生成的版本数据
-apply-templates.sh           # gawk + jq-template.awk 渲染
-update.sh                    # 调用 versions.sh + apply-templates.sh
-```
+| 上游路径 | 本地路径 | 关系 |
+|----------|----------|------|
+| Dockerfile-linux.template | template/Dockerfile-debian.template | 拆分 |
+| 同上 | template/Dockerfile-debian-slim.template | 拆分 |
+| 同上 | template/Dockerfile-alpine.template | 拆分 |
+| Dockerfile-windows.template | — | 上游已废弃（本地不迁移） |
+| versions.sh | template/update.sh | 重写（bash + jq，从 python.org/SBOM 取 checksum） |
+| apply-templates.sh | template/apply-templates.sh | 重写（jq 提取 + sed/awk 渲染，含 {BLOCK_*} 块注入） |
 
-## 本地映射
+## 改动清单
 
-| 上游 | 本地 | 说明 |
-|------|------|------|
-| `Dockerfile-linux.template` | `template/Dockerfile-debian.template` | Debian 全量镜像 |
-| 同上 | `template/Dockerfile-debian-slim.template` | Debian slim 镜像 |
-| 同上 | `template/Dockerfile-alpine.template` | Alpine 镜像 |
-| `versions.sh` | `template/update.sh` | 从 python.org API 获取 checksum，预计算条件块 |
-| `apply-templates.sh` | `template/apply-templates.sh` | sed + awk 渲染 |
+- 模板: 上游条件逻辑（GPG 验证、setuptools、zstd、frame pointers 等）改为 apply-templates.sh 预生成 {BLOCK_*} 文本块注入模板
+- 基础镜像: debian=forky、alpine=3.24，值集中在 update.sh；FROM 保持上游通用形式
+- 版本差异: 3.10/3.11 需 GPG 验证 + setuptools；3.12 仅 GPG 验证；3.13+ 无 GPG 验证（PEP 761）
+- 编译选项: alpine 禁用 --enable-optimizations + -DTHREAD_STACK_SIZE=0x100000；非 alpine 启用 --enable-optimizations + -fno-omit-frame-pointer
 
-## 模板变量
+## 变量表
 
-| 变量 | 来源 | 说明 |
-|------|------|------|
-| `{VERSION}` | update.sh | Python 完整版本号（如 3.14.6） |
-| `{PYTHON_SHA256}` | update.sh | 源码 tarball 的 SHA256 |
-| `{DEBIAN_VERSION}` | update.sh | Debian 版本（仅在 update.sh 中管理，不体现在 config.yml） |
-| `{ALPINE_VERSION}` | update.sh | Alpine 版本（仅在 update.sh 中管理，不体现在 config.yml） |
-| `{GPG_KEY}` | update.sh | GPG 公钥 ID（仅 3.10-3.12） |
+| 占位符 | 来源 | 说明 |
+|--------|------|------|
+| {PYTHON_SHA256}（经 {BLOCK_ENV_SHA256}） | update.sh | 源码 tarball 校验和 |
+| {GPG_KEY} | update.sh | GPG 公钥 ID（仅 3.10-3.12） |
+| {V_SETUPTOOLS} | update.sh | setuptools 版本（仅 3.10/3.11） |
+| {BLOCK_GPG_VERIFY} {BLOCK_GPG_DOWNLOAD} {BLOCK_SETUPTOOLS} {BLOCK_ENV_*} {BLOCK_DEBIAN_*} {BLOCK_ALPINE_BUILD_DEPS} {BLOCK_FRAME_PTRS} {BLOCK_MAKE_FLAGS} | apply-templates.sh | 预计算条件块（按版本/变体注入或置空） |
+| {DEBIAN_VERSION} / {ALPINE_VERSION} | update.sh | 基础镜像版本 |
 
-## 变体说明
+## 上游同步清单
 
-| 变体 | 模板 | 特点 |
-|------|------|------|
-| debian | Dockerfile-debian.template | 全量镜像，含 tk/bluetooth 等 |
-| debian-slim | Dockerfile-debian-slim.template | 精简镜像 |
-| alpine | Dockerfile-alpine.template | 最小镜像 |
+1. 上游 Dockerfile-linux.template 有新条件逻辑时，在 apply-templates.sh 预计算新 {BLOCK_*}
+2. 新 GPG key 或 setuptools 变更时，更新 update.sh 中按大版本的映射
+3. 新大版本默认按 3.13+ 模式处理（无 GPG 验证），确认上游无变化
 
-> 基础镜像版本（如 forky、3.24）不体现在变体名中，仅在 update.sh 作为变量管理。
+## 已知问题
 
-## 版本特殊处理
-
-- **3.10, 3.11**: 需要 GPG 签名验证 + setuptools 安装
-- **3.12**: 需要 GPG 签名验证，无 setuptools
-- **3.13+**: 无 GPG 验证（PEP 761），无 setuptools
-- **Alpine**: `--enable-optimizations` 禁用，`-DTHREAD_STACK_SIZE=0x100000`
-- **非 Alpine**: `--enable-optimizations` 启用，`-fno-omit-frame-pointer`
-
-## 上游更新时的调整步骤
-
-1. 对比上游 `Dockerfile-linux.template` 和本地模板
-2. 如有新增条件逻辑，在 update.sh 中预计算新块
-3. 如有新增 GPG key 或 setuptools 变更，更新 update.sh 中的映射
-
-## 构建
-
-```bash
-python3 tools/build.py library/python
-```
+- 无未解决问题
