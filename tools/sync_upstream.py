@@ -6,14 +6,17 @@
         → 与「上次成功检查的 HEAD」比较做跳过缓存
         → 按映射表取上游最新文件与本地逐文件比对：
              一致的跳过；不一致/取不到/含占位符的打包成任务交 AI
-  AI:   自行 diff 本地与上游最新文件，判断是否需要合并（改动清单随任务提供）
-  把关: 快照越界校验 / bash -n / 模板无 registry 前缀 / build.py --dry-run
+  AI:   只做判断与文件修改：自行 diff 本地与上游最新文件，判断是否需要合并
+        （改动清单随任务提供）；不执行任何验证/构建，验证由脚本统一执行
+  把关: 快照越界 / bash -n / 模板无 registry 前缀 / 真实渲染 + 占位符残留
+        检查（--build 可选真实构建）
         全部通过才记录 HEAD —— 它只是下次的跳过缓存，不参与正确性判断
 
 用法:
   python3 tools/sync_upstream.py library/ruby              # 同步（默认 hermes agent）
   python3 tools/sync_upstream.py library/ruby --dry-run    # 仅报告差异，不调 Agent
   python3 tools/sync_upstream.py library/ruby --agent none # 仅列待比对项
+  python3 tools/sync_upstream.py library/ruby --build      # 验证末尾追加真实构建（--test 不推送）
 
 退出码: 0 成功/无更新; 1 校验失败或 Agent 失败; 2 用法问题
 """
@@ -262,9 +265,9 @@ TASK_RULES = """\
    - 基础镜像版本值只在 update.sh 定义，模板中以 {DEBIAN_VERSION}/{ALPINE_VERSION} 出现
    - 基础镜像版本是 loong64 平台硬约束：Debian 一律 forky，不随上游 variants 变化（docs/01 约束 7）；Alpine 版本如需变更先在摘要中提出等待确认，不得径直改
    - 保留全部 loong64 适配（pcre-jit、fiber、libucontext、unofficial-builds 等）
-4. 新建/修改的 .sh 保持可执行权限；改完对每个改动的 .sh 跑 `bash -n`
+4. 只做判断与文件修改：不执行任何验证或构建（bash -n、--versions、--dry-run、--test、docker 一律不运行），验证由同步脚本在你完成后统一执行；新建的 .sh 保持可执行位
 5. AGENTS.md 可能受文件保护无法直接写入：如需更新映射表/改动清单，把**完整的新版 AGENTS.md** 写到任务目录下的 `AGENTS_md_update.md`（由脚本在校验通过后应用）；「上次同步 commit」行保持原值不动（由脚本写回）
-6. 完成后输出变更摘要（每个文件改了什么、为什么）
+6. 修改完成后输出变更摘要（每个文件改了什么、为什么），即结束
 """
 
 JUDGE_GUIDE = """\
@@ -401,8 +404,55 @@ def git_snapshot() -> dict:
     return snap
 
 
-def verify(meta: ProjectMeta, before: dict) -> list[str]:
-    """校验本次同步引入的变化（与 before 快照对比）；返回错误列表，空 = 通过"""
+def _render_check(meta: ProjectMeta) -> tuple[list, str | None]:
+    """固定渲染验证：真实执行 update.sh + apply-templates.sh（最新版本），
+    检查每个变体产出 Dockerfile 且无占位符残留。返回 (错误列表, 版本号)"""
+    proj = ROOT / f"library/{meta.project}"
+    try:
+        r = subprocess.run(
+            [sys.executable, str(ROOT / "tools/build.py"), "--versions", str(proj)],
+            cwd=ROOT, capture_output=True, text=True, timeout=300,
+        )
+    except subprocess.TimeoutExpired:
+        return ["--versions 超时（300s）"], None
+    if r.returncode != 0:
+        return [f"--versions 失败（版本来源不可用）:\n{(r.stderr or r.stdout).strip()[-500:]}"], None
+    versions = [v for v in r.stdout.split() if v]
+    if not versions:
+        return ["版本来源未产出任何版本号"], None
+    version = versions[0]
+
+    info(f"验证: 真实渲染最新版本 {version}（update.sh + apply-templates.sh）")
+    for script in ("update.sh", "apply-templates.sh"):
+        try:
+            r = subprocess.run(
+                [f"./{script}", version], cwd=str(proj / "template"),
+                capture_output=True, text=True, timeout=1800,
+            )
+        except subprocess.TimeoutExpired:
+            return [f"{script} {version} 超时（1800s）"], version
+        if r.returncode != 0:
+            return ([f"{script} {version} 执行失败 (exit {r.returncode}):\n"
+                     f"{(r.stderr or r.stdout).strip()[-500:]}"], version)
+
+    dockerfiles = list((proj / "dockerfiles" / version).rglob("Dockerfile"))
+    if not dockerfiles:
+        return ([f"渲染未产出任何 Dockerfile: dockerfiles/{version}/"], version)
+
+    errors = []
+    leftover = []
+    for df in dockerfiles:
+        for m in re.finditer(r"\{[A-Z][A-Z0-9_]{2,}\}", df.read_text()):
+            leftover.append(f"{df.relative_to(ROOT)}: {m.group(0)}")
+    if leftover:
+        errors.append("渲染残留占位符（sed 集合与模板不一致？）:\n  " + "\n  ".join(leftover[:10]))
+    info(f"验证: 渲染通过（{len(dockerfiles)} 个 Dockerfile，无占位符残留）")
+    return errors, version
+
+
+def verify(meta: ProjectMeta, before: dict, do_build: bool = False) -> list[str]:
+    """固定验证流水线（AI 只改文件，验证全在这里执行）：
+    越界 → bash -n → registry 前缀 → 真实渲染/占位符 → 可选真实构建"""
     errors = []
     prefix = f"library/{meta.project}/"
     now = git_snapshot()
@@ -432,12 +482,27 @@ def verify(meta: ProjectMeta, before: dict) -> list[str]:
             if registry in t.read_text():
                 errors.append(f"模板写死了 registry 前缀: {t.relative_to(ROOT)}")
 
-    r = subprocess.run(
-        [sys.executable, str(ROOT / "tools/build.py"), "--dry-run", prefix.rstrip("/")],
-        cwd=ROOT, capture_output=True, text=True,
-    )
-    if r.returncode != 0:
-        errors.append(f"build.py --dry-run 失败:\n{(r.stderr or r.stdout).strip()}")
+    # 真实渲染 + 占位符残留（前面出错则跳过，避免连锁噪音）
+    version = None
+    if not errors:
+        errors, version = _render_check(meta)
+
+    # 可选真实构建（--build）：对最新版本跑 --test（不推送、不记录）
+    if do_build and not errors and version:
+        info(f"验证: 真实构建 {version}（--test，不推送）")
+        try:
+            r = subprocess.run(
+                [sys.executable, str(ROOT / "tools/build.py"), "--test",
+                 f"library/{meta.project}", version],
+                cwd=ROOT, capture_output=True, text=True, timeout=7200,
+            )
+        except subprocess.TimeoutExpired:
+            errors.append(f"真实构建超时（7200s）")
+        else:
+            if r.returncode != 0:
+                errors.append(f"真实构建失败 (exit {r.returncode}):\n{(r.stderr or r.stdout).strip()[-800:]}")
+            else:
+                info(f"验证: 真实构建通过（{version}）")
     return errors
 
 
@@ -448,6 +513,8 @@ def main():
     p.add_argument("project_dir", help="项目目录（如 library/ruby）")
     p.add_argument("--dry-run", action="store_true", help="仅报告比对结果，不调用 Agent、不改文件")
     p.add_argument("--agent", default="hermes", choices=["hermes", "none"], help="合并用 Agent（默认 hermes）")
+    p.add_argument("--build", action="store_true",
+                   help="验证流水线最后追加真实构建最新版本（--test 不推送；默认关闭，构建较慢）")
     args = p.parse_args()
 
     project_dir = (ROOT / args.project_dir).resolve()
@@ -506,7 +573,7 @@ def main():
         warn("未记录 HEAD；修复后重跑即可重新比对")
         sys.exit(1)
 
-    errors = verify(meta, before)
+    errors = verify(meta, before, do_build=args.build)
     for e in errors:
         warn(f"校验失败: {e}")
 
