@@ -4,27 +4,28 @@
 
 | 字段 | 值 |
 |------|-----|
-| 仓库 | https://github.com/docker-library/rust |
+| 仓库 | https://github.com/rust-lang/docker-rust |
 | 分支 | master |
 | 上次同步 commit | 未记录（历史迁移未保存，下次同步时补记） |
-| 上游渲染方式 | jq-template.awk（Dockerfile-linux.template，多架构 case） |
+| 上游渲染方式 | x.py（Python）+ versions.toml，`%%VAR%%` 占位符，每变体一个模板 |
 
 ## 映射表
 
 | 上游路径 | 本地路径 | 关系 |
 |----------|----------|------|
-| Dockerfile-linux.template | template/Dockerfile-debian.template | 拆分（rustup-init 多架构 case 展开为 {SHA256_*} 占位符） |
-| 同上 | template/Dockerfile-debian-slim.template | 拆分 |
-| 同上 | template/Dockerfile-alpine.template | 拆分（musl 架构，独立 SHA256 变量） |
-| versions.sh | template/update.sh | 重写（bash + wget，取 rustup 版本与各架构 SHA256） |
-| apply-templates.sh | template/apply-templates.sh | 重写（jq 提取 + sed 渲染） |
+| Dockerfile-debian.template | template/Dockerfile-debian.template | 重写（%%VAR%% → {VAR}，多架构 case 展开为占位符） |
+| Dockerfile-slim.template | template/Dockerfile-debian-slim.template | 重写 |
+| Dockerfile-alpine.template | template/Dockerfile-alpine.template | 重写 |
+| versions.toml | template/update.sh | 重写（上游仅 rust/rustup 版本；本地另取各架构 rustup-init SHA256） |
+| x.py | template/apply-templates.sh | 重写（jq 提取 + sed 渲染） |
 
 ## 改动清单
 
-- 模板: 上游 rustup-init 架构 case 展开为每架构 {SHA256_*} 占位符，含 loong64（glibc）与 loongarch64-musl（alpine）
+- 占位符: 上游 `%%TAG%%`/`%%RUST-VERSION-ARG%%`/`%%ARCH-CASE%%`/`%%RUSTUP-VERSION%%` → 本地 `{VAR}`；架构 case 在 update.sh 展开为 `{SHA256_*}` 变量
 - 基础镜像: debian=forky、alpine=3.24，值集中在 update.sh 顶部；FROM 保持上游通用形式
-- 版本: rustup 版本从 static.rust-lang.org/rustup/release-stable.toml 实时获取
-- 变体: config.yml 只含 debian / debian-slim / alpine 三个
+- 版本来源: 上游 versions.toml（x.py 自更新）→ 本地 get_versions.sh 从 static.rust-lang.org 的 channel-rust-stable.toml 取最新 stable；rustup 版本从 release-stable.toml 实时取
+- 架构: 本地含 loong64 支持（{SHA256_LOONG64} glibc、{SHA256_LOONGARCH64_MUSL} alpine）
+- 渠道: 上游有 stable/nightly 两渠道，本地仅构建 stable
 
 ## 变量表
 
@@ -37,9 +38,9 @@
 
 ## 上游同步清单
 
-1. 上游新增架构时，模板加 case 分支 + update.sh 加 SHA256 变量
-2. 上游 Rust 大版本发布后，get_versions.sh 从 channel-rust-stable.toml 自动取新版
-3. 检查 static.rust-lang.org 的 rustup archive 路径格式未变
+1. 上游新增/调整架构时，模板加对应 {SHA256_*} 占位符 + update.sh 加取值逻辑
+2. 上游 %%VAR%% 集合变化时，apply-templates.sh 的 sed 集合需同步增删
+3. rust 新 stable 由 get_versions.sh 自动跟随；rustup 大版本升级后核对 static.rust-lang.org 的 archive 路径格式未变
 
 ## 已知问题
 
