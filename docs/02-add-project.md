@@ -165,7 +165,8 @@ python3 tools/build.py --push library/{name}
 python3 tools/sync_upstream.py library/{name}              # 完整同步（默认 hermes Agent 合并）
 python3 tools/sync_upstream.py library/{name} --dry-run    # 仅报告上游变更与分派，不改文件
 python3 tools/sync_upstream.py library/{name} --agent none # 不调 Agent，仅列待合并项
-python3 tools/sync_upstream.py library/{name} --init       # 无基线时记录当前上游 HEAD 为初始基线
+python3 tools/sync_upstream.py library/{name} --init       # 无基线时建基线（回溯到本地迁移日对应的上游 commit）
+python3 tools/sync_upstream.py library/{name} --init-head  # 基线直接记上游 HEAD（仅当本地已与上游核对一致）
 ```
 
 ## 工作方式
@@ -179,7 +180,7 @@ python3 tools/sync_upstream.py library/{name} --init       # 无基线时记录�
 ## 注意
 
 - 无 git 上游的项目（alpine/debian）自动跳过
-- AGENTS.md「上次同步 commit」为"未记录"时先 `--init` 建基线，绝不盲目覆盖
+- AGENTS.md「上次同步 commit」为"未记录"时先 `--init` 建基线；它会回溯到本地迁移日期对应的上游 commit（宁旧勿新——旧基线只会多报已同步过的变更供 Agent 幂等处理，新基线会把历史差异永久吞掉），切勿用 `--init-head` 除非已人工核对本地与上游一致
 - 同步产生的模板改动务必实际构建验证（脚本校验不含 docker 构建；Agent 通常会自跑 `--test`，检查其日志）
 - 上游补丁范围外的历史差异（基线内就存在的漂移）脚本发现不了，需定期人工对齐
 

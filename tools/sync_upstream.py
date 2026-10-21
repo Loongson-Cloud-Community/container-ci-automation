@@ -347,12 +347,33 @@ def verify(meta: ProjectMeta, before: dict) -> list[str]:
 
 # ── 主流程 ──────────────────────────────────────────────────────────
 
+def local_migration_date(project: str):
+    """本地项目首次入库日期（git 历史），用于回溯上游基线；无历史返回 None"""
+    r = subprocess.run(
+        ["git", "log", "--reverse", "--format=%cI", "--", f"library/{project}"],
+        cwd=ROOT, capture_output=True, text=True,
+    )
+    lines = [l for l in r.stdout.splitlines() if l.strip()]
+    return lines[0][:10] if lines else None
+
+
+def upstream_commit_until(meta: ProjectMeta, date: str):
+    """上游分支上不晚于 date 的最后一个 commit（回溯基线用）"""
+    endpoint = (f"repos/{meta.owner_repo}/commits"
+                f"?sha={meta.branch}&until={date}T23:59:59Z&per_page=1")
+    data = json.loads(gh([endpoint]))
+    return data[0]["sha"] if data else None
+
+
 def main():
     p = argparse.ArgumentParser(description="同步项目上游变更，刷新 AGENTS.md 上次同步 commit")
     p.add_argument("project_dir", help="项目目录（如 library/ruby）")
     p.add_argument("--dry-run", action="store_true", help="仅报告，不改文件、不调用 Agent")
     p.add_argument("--agent", default="hermes", choices=["hermes", "none"], help="合并用 Agent（默认 hermes）")
-    p.add_argument("--init", action="store_true", help="记录当前上游 HEAD 为初始基线")
+    p.add_argument("--init", action="store_true",
+                   help="建初始基线：默认回溯到本地迁移日期对应的上游 commit（不吞历史差异）")
+    p.add_argument("--init-head", action="store_true",
+                   help="建初始基线并直接记上游 HEAD（仅当本地已与上游核对一致时使用）")
     args = p.parse_args()
 
     project_dir = (ROOT / args.project_dir).resolve()
@@ -373,13 +394,33 @@ def main():
         sys.exit(1)
     info(f"上游 HEAD: {head[:12]}（{meta.owner_repo}@{meta.branch}）")
 
-    # --init
-    if args.init:
+    # --init / --init-head
+    if args.init or args.init_head:
+        if args.init_head:
+            baseline, origin = head, "上游 HEAD"
+        else:
+            # 回溯：本地项目首次入库日期 → 上游当天最近 commit（宁旧勿新，不吞历史差异）
+            date = local_migration_date(meta.project)
+            if not date:
+                warn("本地无 git 历史可回溯迁移日期，请改用 --init-head 或手工指定基线")
+                sys.exit(2)
+            baseline = upstream_commit_until(meta, date)
+            if not baseline:
+                warn(f"上游 {meta.branch} 上找不到不晚于 {date} 的 commit")
+                sys.exit(1)
+            origin = f"本地迁移日期 {date} 对应的上游 commit"
         if args.dry_run:
-            info(f"[dry-run] 将记录基线 {head[:12]}")
+            info(f"[dry-run] 将记录基线 {baseline[:12]}（{origin}）")
             sys.exit(0)
-        write_baseline(meta, head)
-        info("初始化完成；后续运行将以该 commit 为基线做 diff")
+        write_baseline(meta, baseline)
+        info(f"初始化完成（{origin}）；后续运行将以该 commit 为基线做 diff")
+        # 提示基线到 HEAD 的积压规模，便于判断是否需要同步
+        if not baseline.startswith(head):
+            try:
+                n = len(compare_files(meta, baseline, head))
+                info(f"提示：基线 → 上游 HEAD 有 {n} 个文件变更待同步，可先 --dry-run 查看")
+            except RuntimeError:
+                pass
         sys.exit(0)
 
     # 基线缺失
