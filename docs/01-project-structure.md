@@ -42,7 +42,7 @@ library/{project}/
 |------|------|------|
 | `config.yml` | 配置 | 全局 registry（如 `lcr.loongnix.cn`），推送时拼在镜像名前 |
 | `tools/build.py` | 工具 | 版本获取 → 去重 → update.sh → apply-templates.sh → buildx 构建 → 推送 → 版本记录 |
-| `tools/sync_upstream.py` | 工具 | 同步项目上游变更：diff AGENTS.md 基线 → 1:1 拷贝自动同步 → 调用 Agent（默认 hermes）合并拆分类模板 → 校验 → 写回「上次同步 commit」 |
+| `tools/sync_upstream.py` | 工具 | 上游同步：HEAD 缓存跳过 → 映射表比对"本地当前 vs 上游最新" → 不一致项交 AI（默认 hermes）判断合并 → 校验 → 记录检查点 |
 | `tools/pull_request.py` | 工具 | 由 PR 变更文件推导受影响项目目录，写入 CI 的 `dynamic_ci_name` |
 | `library/{p}/config.yml` | 配置 | 项目标识、版本来源、变体与 tag 声明 |
 | `library/{p}/get_versions.sh` | 脚本 | 输出版本号，每行一个；仅 `version_source.type=script` 时被调用 |

@@ -1,27 +1,25 @@
 #!/usr/bin/env python3
-"""tools/sync_upstream.py — 同步项目上游变更并刷新 AGENTS.md 的上次同步 commit
+"""tools/sync_upstream.py — 基于「本地当前文件 vs 上游最新文件」的 AI 同步
 
-职责分工（脚本做机械活 + 把关，AI Agent 做模板合并）:
-  脚本: 解析 AGENTS.md → 取上游 HEAD → compare 基线 diff → 1:1 拷贝自动同步
-        → 调用 Agent 合并拆分/重写类模板 → 校验 → 写回 commit
-  Agent: 仅处理「需人工合并」项（上游补丁 → 本地占位符模板的适配合并）
+设计（状态比对，不依赖 git 历史 diff）:
+  脚本: 解析 AGENTS.md（上游仓库/分支 + 映射表）→ 取上游 HEAD
+        → 与「上次成功检查的 HEAD」比较做跳过缓存
+        → 按映射表取上游最新文件与本地逐文件比对：
+             一致的跳过；不一致/取不到/含占位符的打包成任务交 AI
+  AI:   自行 diff 本地与上游最新文件，判断是否需要合并（改动清单随任务提供）
+  把关: 快照越界校验 / bash -n / 模板无 registry 前缀 / build.py --dry-run
+        全部通过才记录 HEAD —— 它只是下次的跳过缓存，不参与正确性判断
 
 用法:
-  python3 tools/sync_upstream.py library/ruby                # 完整同步（默认 hermes agent）
-  python3 tools/sync_upstream.py library/ruby --dry-run      # 仅报告，不改任何文件
-  python3 tools/sync_upstream.py library/ruby --agent none   # 不调用 Agent，只报告待合并项
-  python3 tools/sync_upstream.py library/ruby --init         # 记录当前上游 HEAD 为初始基线
+  python3 tools/sync_upstream.py library/ruby              # 同步（默认 hermes agent）
+  python3 tools/sync_upstream.py library/ruby --dry-run    # 仅报告差异，不调 Agent
+  python3 tools/sync_upstream.py library/ruby --agent none # 仅列待比对项
 
-写回规则:
-  校验全部通过才刷新「上次同步 commit」；有任何待合并/校验失败，基线不动，
-  下次重跑还能拿到同一份 diff。
-
-退出码: 0 成功/无更新; 1 校验失败或 Agent 失败; 2 用法/基线问题
+退出码: 0 成功/无更新; 1 校验失败或 Agent 失败; 2 用法问题
 """
 
 import argparse
 import base64
-import json
 import re
 import shlex
 import subprocess
@@ -37,7 +35,8 @@ AGENT_BACKENDS = {
     "hermes": ["hermes", "-z", "{prompt}", "--in", str(ROOT), "--yolo"],
 }
 
-RELATION_INFO_SKIP = ("运行时依赖",)  # 映射表中标注这类关系的行不参与同步
+RELATION_INFO_SKIP = ("运行时依赖",)   # 映射表标注这类关系的行不参与比对
+NO_UPSTREAM = ("—", "", "-")           # 本地新增行，无上游文件可比
 
 
 # ── 日志 ────────────────────────────────────────────────────────────
@@ -54,7 +53,7 @@ def warn(msg):
 
 @dataclass
 class Mapping:
-    upstream: str      # 上游路径（可能含 {MAJOR} 等占位符）
+    upstream: str      # 上游路径（可能含 {MAJOR} 等占位符或 "a / b / c" 多文件）
     local: str         # 本地路径
     relation: str      # 1:1 拷贝 / 拆分 / 重写 / 本地新增 / 上游已废弃 / ...
 
@@ -65,8 +64,8 @@ class ProjectMeta:
     agents_md: Path
     owner_repo: str | None    # "owner/repo"；非 GitHub 上游为 None
     branch: str
-    baseline: str | None      # 上次同步 commit；未记录/不适用为 None
-    baseline_note: str        # 原始单元格文本（用于识别"不适用"）
+    last_checked: str | None  # 上次成功检查的上游 HEAD（纯跳过缓存）；未记录为 None
+    note: str                 # 该字段原始文本（用于识别"不适用"）
     mappings: list = field(default_factory=list)
 
 
@@ -84,8 +83,8 @@ def parse_agents_md(project_dir: Path) -> ProjectMeta:
     text = agents_md.read_text()
 
     owner_repo = branch = None
-    baseline = None
-    baseline_note = ""
+    last_checked = None
+    note = ""
     mappings = []
     section = None
     prev_upstream = ""
@@ -108,10 +107,10 @@ def parse_agents_md(project_dir: Path) -> ProjectMeta:
             elif "分支" in key:
                 branch = val
             elif "commit" in key:
-                baseline_note = val
+                note = val
                 m = re.search(r"\b([0-9a-f]{7,40})\b", val)
                 if m:
-                    baseline = m.group(1)
+                    last_checked = m.group(1)
 
         elif section == "映射表" and line.strip().startswith("|"):
             up, local, rel = (parse_table_cell(line, i) or "" for i in range(3))
@@ -129,13 +128,13 @@ def parse_agents_md(project_dir: Path) -> ProjectMeta:
         agents_md=agents_md,
         owner_repo=owner_repo,
         branch=branch or "master",
-        baseline=baseline,
-        baseline_note=baseline_note,
+        last_checked=last_checked,
+        note=note,
         mappings=mappings,
     )
 
 
-def write_baseline(meta: ProjectMeta, commit: str):
+def record_head(meta: ProjectMeta, commit: str):
     """只改 AGENTS.md「上次同步 commit」一行，其他内容不动"""
     text = meta.agents_md.read_text()
     short = commit[:12]
@@ -150,7 +149,12 @@ def write_baseline(meta: ProjectMeta, commit: str):
         warn("未能在 AGENTS.md 中定位「上次同步 commit」行")
         sys.exit(1)
     meta.agents_md.write_text(new_text)
-    info(f"已写回上次同步 commit: {short}")
+    info(f"已记录上次检查的上游 HEAD: {short}")
+
+
+def extract_section(text: str, name: str) -> str:
+    m = re.search(rf"^##\s+{re.escape(name)}\s*$(.*?)(?=^##\s|\Z)", text, re.M | re.S)
+    return m.group(0).strip() if m else ""
 
 
 # ── GitHub 访问 ──────────────────────────────────────────────────────
@@ -166,21 +170,13 @@ def gh(args, jq=None):
 
 
 def upstream_head(meta: ProjectMeta) -> str:
-    return gh([f"repos/{meta.owner_repo}/branches/{meta.branch}", "--jq", ".commit.sha"]).strip()
-
-
-def compare_files(meta: ProjectMeta, base: str, head: str) -> list:
-    data = json.loads(gh([f"repos/{meta.owner_repo}/compare/{base}...{head}"]))
-    files = data.get("files") or []
-    if data.get("total_commits", 0) >= 250 or len(files) >= 300:
-        warn("上游变更规模接近 compare API 上限（300 文件），结果可能不完整")
-    return files
+    return gh([f"repos/{meta.owner_repo}/branches/{meta.branch}"], jq=".commit.sha").strip()
 
 
 def fetch_upstream_file(meta: ProjectMeta, path: str, ref: str) -> bytes | None:
-    """取上游某 ref 下的文件内容；不存在返回 None"""
+    """取上游某 ref 下的文件内容；不存在/失败返回 None"""
     try:
-        b64 = gh([f"repos/{meta.owner_repo}/contents/{path}", f"ref={ref}", "--jq", ".content"]).strip()
+        b64 = gh([f"repos/{meta.owner_repo}/contents/{path}?ref={ref}"], jq=".content").strip()
         if not b64 or b64 == "null":
             return None
         return base64.b64decode(b64)
@@ -188,34 +184,67 @@ def fetch_upstream_file(meta: ProjectMeta, path: str, ref: str) -> bytes | None:
         return None
 
 
-# ── 映射匹配 ────────────────────────────────────────────────────────
+# ── 映射比对 ────────────────────────────────────────────────────────
 
-def upstream_regex(upstream: str) -> re.Pattern:
-    """含 {MAJOR} 等占位符的上游路径 → 通配正则"""
-    pat = re.escape(upstream)
-    pat = re.sub(r"\\\{[A-Za-z_]+\\\}", "[^/]+", pat)
-    return re.compile(f"^{pat}$")
-
-
-def match_mapping(meta: ProjectMeta, changed_path: str) -> Mapping | None:
-    exact = [m for m in meta.mappings if m.upstream == changed_path]
-    if exact:
-        return exact[0]
-    for m in meta.mappings:
-        if "{" in m.upstream and upstream_regex(m.upstream).match(changed_path):
-            return m
-    return None
+def upstream_names(upstream: str) -> list[str]:
+    """映射表上游单元格可能是 \"a / b / c\" 多文件 → 拆成列表"""
+    if " / " in upstream:
+        return [s.strip() for s in upstream.split(" / ")]
+    return [upstream]
 
 
 def resolve_local(m: Mapping) -> str | None:
-    """1:1 拷贝行的本地落点；返回 None 表示构建时自动获取，无需同步"""
+    """本地落点；返回 None 表示构建时自动获取或无本地文件（不参与比对）"""
     local = m.local.split("（")[0].strip()
-    if local.startswith("dockerfiles/") or local == "—":
+    if local.startswith("dockerfiles/") or local in NO_UPSTREAM:
         return None
     if "同名" in local or " " in local:
         # 多文件同行（如 php 的 docker-php-* 脚本）→ 按上游 basename 落到 template/
         return f"template/{m.upstream.split('/')[-1]}"
     return local
+
+
+@dataclass
+class Candidate:
+    upstream: str       # 映射表原样（展示用）
+    local: str          # 映射表本地列原文（展示用）
+    relation: str
+    files: list         # [(name, local_rel, upstream_bytes|None, note)]
+
+
+def collect_candidates(meta: ProjectMeta, head: str) -> tuple[list, int]:
+    """按映射表比对上游最新文件与本地；返回 (待比对项, 已一致行数)"""
+    candidates, in_sync = [], 0
+    for m in meta.mappings:
+        if m.relation in RELATION_INFO_SKIP or m.upstream in NO_UPSTREAM:
+            continue
+        local = resolve_local(m)
+        if local is None:
+            continue  # 构建时自动获取（dockerfiles/ 等）
+
+        names = upstream_names(m.upstream)
+        files, mismatched = [], []
+        for name in names:
+            local_rel = local if len(names) == 1 else f"template/{Path(name).name}"
+            if "{" in name:
+                mismatched.append((name, local_rel, None, "上游路径含占位符，请自行 gh api 获取（ref=HEAD）"))
+                continue
+            up_bytes = fetch_upstream_file(meta, name, head)
+            if up_bytes is None:
+                mismatched.append((name, local_rel, None, "上游取不到该文件（404/改名？），请核实映射表"))
+                continue
+            local_path = ROOT / f"library/{meta.project}" / local_rel
+            if local_path.exists() and local_path.read_bytes() == up_bytes:
+                files.append((name, local_rel, up_bytes, "已一致"))
+                continue
+            note = "本地文件不存在" if not local_path.exists() else "与上游最新版不一致"
+            mismatched.append((name, local_rel, up_bytes, note))
+
+        if mismatched:
+            candidates.append(Candidate(m.upstream, m.local, m.relation, mismatched))
+        else:
+            in_sync += 1
+    return candidates, in_sync
 
 
 # ── Agent 调用 ──────────────────────────────────────────────────────
@@ -229,36 +258,57 @@ TASK_RULES = """\
    - 保留本地 {VAR} 占位符，上游新硬编码值改为占位符并加到 update.sh / versions.json 链路
    - FROM 保持上游通用形式，不加 registry 前缀
    - 基础镜像版本值只在 update.sh 定义，模板中以 {DEBIAN_VERSION}/{ALPINE_VERSION} 出现
+   - 基础镜像版本是 loong64 平台硬约束：Debian 一律 forky，不随上游 variants 变化（docs/01 约束 7）；Alpine 版本如需变更先在摘要中提出等待确认，不得径直改
    - 保留全部 loong64 适配（pcre-jit、fiber、libucontext、unofficial-builds 等）
 4. 新建/修改的 .sh 保持可执行权限；改完对每个改动的 .sh 跑 `bash -n`
 5. AGENTS.md 可能受文件保护无法直接写入：如需更新映射表/改动清单，把**完整的新版 AGENTS.md** 写到任务目录下的 `AGENTS_md_update.md`（由脚本在校验通过后应用）；「上次同步 commit」行保持原值不动（由脚本写回）
 6. 完成后输出变更摘要（每个文件改了什么、为什么）
 """
 
+JUDGE_GUIDE = """\
+## 判断方法
 
-def build_task_file(meta: ProjectMeta, head: str, tasks: list, out_dir: Path) -> Path:
+对每个「待比对文件」自行 diff「本地当前版」与「上游最新版」，自行判断是否需要落到本地：
+
+- 上游改动与本地无关、或本地已用其他方式实现 → 不改文件，在摘要中说明理由即可
+- 需要合并 → 按下方规则修改本地文件
+- 关系为「1:1 拷贝」且本地无特殊适配 → 可直接以上游最新版覆盖本地
+- 怀疑上游新增了映射表未覆盖的模板文件时，可用 `gh api repos/@REPO@/contents/` 列上游目录核对（可选）
+"""
+
+
+def build_task_file(meta: ProjectMeta, head: str, candidates: list, out_dir: Path) -> Path:
+    agents_text = meta.agents_md.read_text()
     lines = [
         f"# 上游同步任务: library/{meta.project}",
         "",
-        f"- 上游: https://github.com/{meta.owner_repo}（分支 {meta.branch}）",
-        f"- 目标 commit: {head}",
+        f"- 上游: https://github.com/{meta.owner_repo}（分支 {meta.branch}，HEAD {head[:12]}）",
         f"- 项目目录: library/{meta.project}",
         "",
-        "## 待合并文件",
+        "## 本地改动清单（AGENTS.md，改本地前必读）",
+        "",
+        extract_section(agents_text, "改动清单") or "（无）",
+        "",
+        "## 待比对文件",
         "",
     ]
-    for t in tasks:
-        lines.append(f"### {t['upstream']} → {t['local']}（{t['relation']}）")
+    for i, c in enumerate(candidates):
+        lines.append(f"### {c.upstream} → {c.local}（{c.relation}）")
         lines.append("")
-        if t["patch"]:
-            patch_path = out_dir / f"{abs(hash(t['upstream'])) % 10**8}.patch"
-            patch_path.write_text(t["patch"])
-            lines.append(f"上游补丁见 `{patch_path}`（基线→目标的 diff）")
-        else:
-            lines.append("补丁过大或为二进制，无内嵌 diff；请用以下命令自行获取完整文件对比：")
-            lines.append(f"```\ngh api repos/{meta.owner_repo}/contents/{t['upstream']}?ref={head} --jq .content | base64 -d\n```")
+        for j, (name, local_rel, up_bytes, note) in enumerate(c.files):
+            if up_bytes is not None:
+                up_path = out_dir / f"upstream-{i}-{j}-{Path(name).name}"
+                up_path.write_bytes(up_bytes)
+                lines.append(f"- `{name}` → `{local_rel}`（{note}）：上游最新版 `{up_path}`，本地 `library/{meta.project}/{local_rel}`")
+            else:
+                lines.append(f"- `{name}` → `{local_rel}`（{note}）")
         lines.append("")
-    lines += ["## 规则", "", TASK_RULES.replace("@PROJECT@", meta.project)]
+    lines += [
+        JUDGE_GUIDE.replace("@REPO@", meta.owner_repo or ""),
+        "## 规则",
+        "",
+        TASK_RULES.replace("@PROJECT@", meta.project),
+    ]
     task_file = out_dir / "TASK.md"
     task_file.write_text("\n".join(lines))
     return task_file
@@ -266,8 +316,8 @@ def build_task_file(meta: ProjectMeta, head: str, tasks: list, out_dir: Path) ->
 
 def run_agent(agent: str, task_file: Path, log_file: Path) -> bool:
     prompt = (
-        f"读取 {task_file} 并严格按其要求执行上游同步合并任务。"
-        f"先读仓库根 AGENTS.md 了解文档结构，再读 docs/02 了解模板规范，然后动手。"
+        f"读取 {task_file} 并严格按其要求执行上游同步任务。"
+        f"先读仓库根 AGENTS.md 了解文档结构，再读 docs/01 的关键约束与 docs/02 的模板规范，然后动手。"
     )
     cmd = [c.format(prompt=prompt) for c in AGENT_BACKENDS[agent]]
     info(f"调用 Agent [{agent}]: {shlex.join(cmd[:3])}…（日志: {log_file}）")
@@ -347,33 +397,11 @@ def verify(meta: ProjectMeta, before: dict) -> list[str]:
 
 # ── 主流程 ──────────────────────────────────────────────────────────
 
-def local_migration_date(project: str):
-    """本地项目首次入库日期（git 历史），用于回溯上游基线；无历史返回 None"""
-    r = subprocess.run(
-        ["git", "log", "--reverse", "--format=%cI", "--", f"library/{project}"],
-        cwd=ROOT, capture_output=True, text=True,
-    )
-    lines = [l for l in r.stdout.splitlines() if l.strip()]
-    return lines[0][:10] if lines else None
-
-
-def upstream_commit_until(meta: ProjectMeta, date: str):
-    """上游分支上不晚于 date 的最后一个 commit（回溯基线用）"""
-    endpoint = (f"repos/{meta.owner_repo}/commits"
-                f"?sha={meta.branch}&until={date}T23:59:59Z&per_page=1")
-    data = json.loads(gh([endpoint]))
-    return data[0]["sha"] if data else None
-
-
 def main():
-    p = argparse.ArgumentParser(description="同步项目上游变更，刷新 AGENTS.md 上次同步 commit")
+    p = argparse.ArgumentParser(description="本地文件 vs 上游最新文件的 AI 同步，记录检查点到 AGENTS.md")
     p.add_argument("project_dir", help="项目目录（如 library/ruby）")
-    p.add_argument("--dry-run", action="store_true", help="仅报告，不改文件、不调用 Agent")
+    p.add_argument("--dry-run", action="store_true", help="仅报告比对结果，不调用 Agent、不改文件")
     p.add_argument("--agent", default="hermes", choices=["hermes", "none"], help="合并用 Agent（默认 hermes）")
-    p.add_argument("--init", action="store_true",
-                   help="建初始基线：默认回溯到本地迁移日期对应的上游 commit（不吞历史差异）")
-    p.add_argument("--init-head", action="store_true",
-                   help="建初始基线并直接记上游 HEAD（仅当本地已与上游核对一致时使用）")
     args = p.parse_args()
 
     project_dir = (ROOT / args.project_dir).resolve()
@@ -383,8 +411,8 @@ def main():
     meta = parse_agents_md(project_dir)
 
     # 无 git 上游的项目（alpine/debian 等）
-    if not meta.owner_repo or "不适用" in meta.baseline_note:
-        info(f"library/{meta.project} 无 git 上游（或基线不适用），无需同步")
+    if not meta.owner_repo or "不适用" in meta.note:
+        info(f"library/{meta.project} 无 git 上游（或不适用），无需同步")
         sys.exit(0)
 
     try:
@@ -394,145 +422,59 @@ def main():
         sys.exit(1)
     info(f"上游 HEAD: {head[:12]}（{meta.owner_repo}@{meta.branch}）")
 
-    # --init / --init-head
-    if args.init or args.init_head:
-        if args.init_head:
-            baseline, origin = head, "上游 HEAD"
-        else:
-            # 回溯：本地项目首次入库日期 → 上游当天最近 commit（宁旧勿新，不吞历史差异）
-            date = local_migration_date(meta.project)
-            if not date:
-                warn("本地无 git 历史可回溯迁移日期，请改用 --init-head 或手工指定基线")
-                sys.exit(2)
-            baseline = upstream_commit_until(meta, date)
-            if not baseline:
-                warn(f"上游 {meta.branch} 上找不到不晚于 {date} 的 commit")
-                sys.exit(1)
-            origin = f"本地迁移日期 {date} 对应的上游 commit"
-        if args.dry_run:
-            info(f"[dry-run] 将记录基线 {baseline[:12]}（{origin}）")
-            sys.exit(0)
-        write_baseline(meta, baseline)
-        info(f"初始化完成（{origin}）；后续运行将以该 commit 为基线做 diff")
-        # 提示基线到 HEAD 的积压规模，便于判断是否需要同步
-        if not baseline.startswith(head):
-            try:
-                n = len(compare_files(meta, baseline, head))
-                info(f"提示：基线 → 上游 HEAD 有 {n} 个文件变更待同步，可先 --dry-run 查看")
-            except RuntimeError:
-                pass
+    # 跳过缓存：上次成功检查点 == 当前 HEAD → 上游没动过
+    if meta.last_checked and (head.startswith(meta.last_checked) or meta.last_checked.startswith(head)):
+        info("上游无更新（与上次检查点一致）")
         sys.exit(0)
 
-    # 基线缺失
-    if not meta.baseline:
-        warn("AGENTS.md 中「上次同步 commit」未记录，无法 diff。请先运行：")
-        warn(f"  python3 tools/sync_upstream.py {args.project_dir} --init")
-        sys.exit(2)
+    # 状态比对：上游最新 vs 本地当前
+    candidates, in_sync = collect_candidates(meta, head)
+    info(f"映射 {len(meta.mappings)} 行：已一致 {in_sync} | 待比对 {len(candidates)}")
+    for c in candidates:
+        for name, local_rel, _, note in c.files:
+            if note != "已一致":
+                info(f"    [比对] {name} → {local_rel}：{note}")
 
-    if head.startswith(meta.baseline) or meta.baseline.startswith(head):
-        info("上游无更新")
+    if not candidates:
+        if not args.dry_run:
+            record_head(meta, head)
+        info("所有映射文件与上游最新一致")
         sys.exit(0)
-
-    # 获取基线 diff
-    try:
-        files = compare_files(meta, meta.baseline, head)
-    except RuntimeError as e:
-        warn(str(e))
-        sys.exit(1)
-    info(f"基线 {meta.baseline[:12]} → HEAD：{len(files)} 个文件变更")
-
-    # 分类
-    auto_copy, agent_tasks, skipped, unmapped = [], [], [], []
-    for f in files:
-        path = f["filename"]
-        if f.get("status") == "removed":
-            skipped.append((path, "上游已删除（仅提示）"))
-            continue
-        m = match_mapping(meta, path)
-        if m is None:
-            unmapped.append(path)
-            agent_tasks.append({"upstream": path, "local": "（未映射，判断是否需本地适配）",
-                                "relation": "未映射", "patch": f.get("patch")})
-            continue
-        if m.relation in RELATION_INFO_SKIP or (m.relation == "1:1 拷贝" and resolve_local(m) is None):
-            skipped.append((path, f"{m.relation}（构建时自动获取，无需同步）"))
-            continue
-        if m.relation == "1:1 拷贝":
-            auto_copy.append((path, resolve_local(m), f.get("patch")))
-        else:
-            agent_tasks.append({"upstream": path, "local": resolve_local(m) or m.local,
-                                "relation": m.relation, "patch": f.get("patch")})
-
-    # 报告
-    info(f"  1:1 自动拷贝: {len(auto_copy)} | Agent 合并: {len(agent_tasks)} | 跳过: {len(skipped)}")
-    for up, local, _ in auto_copy:
-        info(f"    [auto] {up} → {local}")
-    for t in agent_tasks:
-        info(f"    [agent] {t['upstream']} → {t['local']}（{t['relation']}）")
-    for up, why in skipped:
-        info(f"    [skip] {up}：{why}")
 
     if args.dry_run:
         info("[dry-run] 结束，未修改任何文件")
         sys.exit(0)
 
-    # 拍快照：本次同步前的工作区状态（verify 只对比快照之后的变化）
+    if args.agent == "none":
+        warn(f"--agent none：{len(candidates)} 项待比对，未记录 HEAD，可重跑或人工处理")
+        sys.exit(0)
+
+    # 拍快照 → 交给 AI 判断 → 校验 → 记录检查点
     before = git_snapshot()
+    out_dir = Path(tempfile.mkdtemp(prefix=f"sync-{meta.project}-"))
+    task_file = build_task_file(meta, head, candidates, out_dir)
+    log_file = out_dir / "agent.log"
+    agent_ok = run_agent(args.agent, task_file, log_file)
+    if not agent_ok:
+        warn(f"Agent 未完成。任务文件: {task_file}，日志: {log_file}")
+        warn("未记录 HEAD；修复后重跑即可重新比对")
+        sys.exit(1)
 
-    # 1:1 自动拷贝（三层校验：基线版本与本地一致才覆盖）
-    copy_ok, copy_conflict = [], []
-    for up, local, _ in auto_copy:
-        local_path = ROOT / f"library/{meta.project}" / local
-        base_content = fetch_upstream_file(meta, up, meta.baseline)
-        head_content = fetch_upstream_file(meta, up, head)
-        if head_content is None:
-            warn(f"  获取上游文件失败: {up}@{head[:12]}")
-            copy_conflict.append(up)
-            continue
-        if local_path.exists() and base_content is not None:
-            if local_path.read_bytes() != base_content:
-                info(f"  [本地有改动] {up} → 转 Agent 合并")
-                agent_tasks.append({"upstream": up, "local": local, "relation": "1:1 拷贝（本地已修改）",
-                                    "patch": None})
-                continue
-        local_path.parent.mkdir(parents=True, exist_ok=True)
-        local_path.write_bytes(head_content)
-        copy_ok.append(up)
-        info(f"  [auto] 已更新 {local}")
-
-    # Agent 合并
-    agent_ok = True
-    out_dir = None
-    if agent_tasks:
-        if args.agent == "none":
-            warn(f"--agent none：{len(agent_tasks)} 个文件待合并，基线不变，稍后可重跑或人工处理")
-            sys.exit(0)
-        out_dir = Path(tempfile.mkdtemp(prefix=f"sync-{meta.project}-"))
-        task_file = build_task_file(meta, head, agent_tasks, out_dir)
-        log_file = out_dir / "agent.log"
-        agent_ok = run_agent(args.agent, task_file, log_file)
-        if not agent_ok:
-            warn(f"Agent 合并未完成。任务文件: {task_file}，日志: {log_file}")
-            warn("基线不变，修复后重跑即可重新获得 diff")
-
-    # 校验（只看快照之后的新变化）
-    errors = verify(meta, before) if (copy_ok or agent_tasks) else []
+    errors = verify(meta, before)
     for e in errors:
         warn(f"校验失败: {e}")
 
-    # Agent 因文件保护无法直接写 AGENTS.md 时，会把更新写到任务目录的 AGENTS_md_update.md
-    agents_md_update = (out_dir / "AGENTS_md_update.md") if (out_dir and agent_tasks and not errors) else None
-    if agents_md_update and agents_md_update.exists():
+    # Agent 因文件保护无法直接写 AGENTS.md 时，把更新写到任务目录由脚本应用
+    agents_md_update = out_dir / "AGENTS_md_update.md"
+    if not errors and agents_md_update.exists():
         meta.agents_md.write_text(agents_md_update.read_text())
         info("已应用 Agent 提交的 AGENTS.md 更新（AGENTS_md_update.md）")
 
-    if errors or not agent_ok or copy_conflict:
-        warn(f"同步未完全成功（auto={len(copy_ok)} 冲突={len(copy_conflict)} agent_ok={agent_ok}）")
-        warn("基线不变；请检查工作区改动后重跑")
+    if errors:
+        warn("同步校验未通过；未记录 HEAD，请检查工作区改动后重跑")
         sys.exit(1)
 
-    # 全部成功 → 写回基线
-    write_baseline(meta, head)
+    record_head(meta, head)
     changed = [f for f, h in git_snapshot().items() if before.get(f) != h]
     info(f"同步完成。本次变更 {len(changed)} 个文件，建议检查后提交：")
     info(f"  git add {args.project_dir} && git commit -m 'sync({meta.project}): 同步上游 {head[:12]}'")

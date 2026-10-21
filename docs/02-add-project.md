@@ -162,27 +162,27 @@ python3 tools/build.py --push library/{name}
 项目建好后，上游更新用 `tools/sync_upstream.py` 同步，不要手工逐文件对 diff。
 
 ```bash
-python3 tools/sync_upstream.py library/{name}              # 完整同步（默认 hermes Agent 合并）
-python3 tools/sync_upstream.py library/{name} --dry-run    # 仅报告上游变更与分派，不改文件
-python3 tools/sync_upstream.py library/{name} --agent none # 不调 Agent，仅列待合并项
-python3 tools/sync_upstream.py library/{name} --init       # 无基线时建基线（回溯到本地迁移日对应的上游 commit）
-python3 tools/sync_upstream.py library/{name} --init-head  # 基线直接记上游 HEAD（仅当本地已与上游核对一致）
+python3 tools/sync_upstream.py library/{name}              # 同步（默认 hermes Agent 判断合并）
+python3 tools/sync_upstream.py library/{name} --dry-run    # 仅报告比对结果，不调 Agent
+python3 tools/sync_upstream.py library/{name} --agent none # 仅列待比对项
 ```
 
-## 工作方式
+## 工作方式（状态比对，不依赖 git 历史）
 
-1. 解析项目 AGENTS.md（上游仓库/分支/上次同步 commit + 映射表）
-2. GitHub compare API diff 基线 → 上游 HEAD
-3. 按映射表分派：`1:1 拷贝` 自动覆盖（先校验本地未被修改，有本地改动则转 Agent）；`拆分/重写` 交给 Agent 合并（补丁 + 项目上下文打包成任务文件）
-4. 校验：只允许项目目录内变更、bash -n、模板无 registry 前缀、build.py --dry-run 通过
-5. 全部通过才写回「上次同步 commit」；任何失败基线不动，重跑可复得同一份 diff
+1. 解析项目 AGENTS.md：上游仓库/分支 + 映射表（仅用于定位上游文件）
+2. 取上游 HEAD，与「上次同步 commit」比较——相等说明上游没动过，直接退出（纯跳过缓存）
+3. 按映射表取上游最新文件，与本地当前文件逐个比对：一致的跳过，不一致的打包成任务交 AI
+4. AI 自行 diff 本地与上游最新版，自行判断：无需改动则只报告；需要合并则按规则改（保留占位符与 loong64 适配）
+5. 校验：只允许项目目录内变更、bash -n、模板无 registry 前缀、build.py --dry-run 通过
+6. 全部通过才把上游 HEAD 记入「上次同步 commit」——它只是下次的跳过缓存，不参与正确性判断；失败不记录，重跑即可
 
 ## 注意
 
 - 无 git 上游的项目（alpine/debian）自动跳过
-- AGENTS.md「上次同步 commit」为"未记录"时先 `--init` 建基线；它会回溯到本地迁移日期对应的上游 commit（宁旧勿新——旧基线只会多报已同步过的变更供 Agent 幂等处理，新基线会把历史差异永久吞掉），切勿用 `--init-head` 除非已人工核对本地与上游一致
+- 首次同步（「上次同步 commit」为"未记录"）直接跑即可：没有基线就没有历史差异问题，AI 比对的是"当前状态 vs 上游最新"
 - 同步产生的模板改动务必实际构建验证（脚本校验不含 docker 构建；Agent 通常会自跑 `--test`，检查其日志）
-- 上游补丁范围外的历史差异（基线内就存在的漂移）脚本发现不了，需定期人工对齐
+- 同步运行期间不要并行编辑仓库任何文件：脚本在启动时拍工作区快照，窗口内的改动（包括你自己改的）都会被校验判为越界而中止
+- 映射表未覆盖的上游新增文件脚本发现不了；AI 在任务指引中可选择列上游目录核对，谨慎起见可定期人工抽查
 
 ---
 
@@ -215,7 +215,7 @@ python3 tools/sync_upstream.py library/{name} --init-head  # 基线直接记上�
 |------|-----|
 | 仓库 | https://github.com/docker-library/{project} |
 | 分支 | master |
-| 上次同步 commit | {hash} |
+| 上次同步 commit | {hash}（上次成功检查的上游 HEAD，同步脚本维护） |
 | 上游渲染方式 | jq-template.awk / 成品 Dockerfile / 无（产物打包） |
 
 ## 映射表
@@ -265,12 +265,12 @@ python3 tools/sync_upstream.py library/{name} --init-head  # 基线直接记上�
 2. **禁止写入通用变量**：`{VERSION}`/`{MAJOR_VERSION}`/`{VARIANT}` 等通用占位符不必入变量表；只列项目自定义的。
 3. **上游类型非 Dockerfile 派生**（如 alpine 的产物打包）：映射表改写为「输入产物来源 → 本地用途」，上游渲染方式写「无」。
 4. **成品 Dockerfile 直下型**（如 erlang）：映射表按变体列出上游路径，关系写「1:1 拷贝 + sed 替换基础镜像」。
-5. **上次同步 commit**：每次同步上游后必须更新为同步时的上游 commit hash。
+5. **上次同步 commit**：记录「最近一次成功检查的上游 HEAD」（同步脚本自动维护）；语义是跳过缓存——与上游 HEAD 相等则下次直接跳过。它不是历史 diff 基线，"未记录"时首跑直接做状态比对即可。
 6. **已知问题只留未解决项**；修复后删除该条，结论写入 `docs/03-ai-maintenance-log.md`。
 
 ## 合规检查清单
 
-- [ ] 上游信息：仓库地址、上次同步 commit 都有值
+- [ ] 上游信息：仓库地址有值；「上次同步 commit」可为"未记录"（首跑同步时脚本自动填）
 - [ ] 映射表、改动清单、变量表三节齐全
 - [ ] 无构建命令 / registry / 平台等全局信息
 - [ ] 无 `{VERSION}` 等通用变量条目

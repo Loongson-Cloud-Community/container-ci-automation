@@ -35,6 +35,27 @@
 
 ## 条目
 
+### 2026-10-21 通用 — Alpine 变体构建在本机被代理阻断（环境问题）
+- 现象: golang/alpine、httpd/alpine 构建时容器内 `wget: error getting response`（连 10.2.10.197:7890 代理）；debian 变体同环境正常。
+- 根因: alpine 容器内 busybox wget 无法走本机 HTTPS 代理；debian 的 buildpack-deps 用完整 wget/证书链不受影响。
+- 修复: 未解决（环境）。判断构建失败归属时先看是否卡在容器内 HTTPS 下载——是则为环境问题，不是模板问题；alpine 变体的实际构建验证需在 CI runner（无代理限制）上做。
+- 适用范围: 所有含 alpine 变体的项目（本机构建时）
+- commit: 本次提交
+
+### 2026-10-21 tools/sync_upstream — AI 合并时差点改掉平台基础镜像约束
+- 现象: golang 首次状态比对同步中，Agent 把 update.sh 的 `debian_version` 从 forky 改成 trixie（理由"对齐上游 variants"），且自述无法实测构建。
+- 根因: 任务提示词只让 Agent 读 docs/02，"Debian 统一 forky"（约束 7）在 docs/01；TASK_RULES 也未含平台硬约束。Agent 的自由判断边界没有显式护栏。
+- 修复: TASK_RULES 第 3 条补"基础镜像版本是 loong64 平台硬约束，Debian 一律 forky，不随上游 variants 变化"；Agent 提示词增加"读 docs/01 的关键约束"。本次 trixie 改动已回滚，其余合并（GOARM、binutils-gold、COPY --link）保留。
+- 适用范围: tools/sync_upstream（所有项目）
+- commit: 本次提交
+
+### 2026-10-21 tools/sync_upstream — 快照校验把运行窗口内的并行编辑判为越界
+- 现象: 同步运行期间并行修改 docs/01、docs/02，脚本退出码 1 报"越界修改"，Agent 合并成果虽通过全部实质校验但未记录 HEAD。
+- 根因: 快照机制设计如此——启动时拍快照，窗口内所有新变化都算"本次同步引入"，无法区分是 Agent 改的还是并行的人改的。
+- 修复: 不改机制（宁可误报也不放过 Agent 越界）；使用约定写入 docs/02 注意——运行期间不要编辑仓库文件；失败后人工补 record_head 或重跑。
+- 适用范围: 工具使用
+- 本次提交
+
 ### 2026-09-21 ci — 定时流水线在 Actions 列表中难以辨识
 - 现象: 多个项目定时流水线混在一起，无法快速定位。
 - 根因: workflow name 未按项目分组。
