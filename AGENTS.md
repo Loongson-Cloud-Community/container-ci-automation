@@ -34,7 +34,7 @@ python3 tools/build.py --push library/ruby       # 构建 + 推送 + 记录版�
 | 理解仓库结构 / 配置字段含义 / build.py 行为 | docs/01 | 不改（结构变了才改 01） |
 | 新增一个项目 | docs/02 | 新建 `library/新项目/**`；流程本身有变才改 02 |
 | 构建失败排查修复 | 该项目 AGENTS.md + docs/03 | 改该项目 `template/`、`config.yml`；结论追加进 03 |
-| 同步该项目上游更新 | 该项目 AGENTS.md（映射表 + 同步清单） | 改模板 + 更新该 AGENTS.md 的映射/同步 commit |
+| 同步该项目上游更新 | `python3 tools/sync_upstream.py library/{p}`（流程见 docs/02） | 改该项目 `template/`（脚本+Agent 完成）+ AGENTS.md 的映射/同步 commit（脚本写回） |
 | 发现跨项目通用新约束 | docs/03 | 写 03 的「通用经验」；结构/流程真变了才改 01/02 |
 | 修复构建错误时想"记一笔" | — | 只写 03；禁止为记录而改 01/02/本文件 |
 

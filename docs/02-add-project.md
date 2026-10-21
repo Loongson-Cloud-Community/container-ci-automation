@@ -157,6 +157,34 @@ python3 tools/build.py --push library/{name}
 
 ---
 
+# 上游同步（已有项目）
+
+项目建好后，上游更新用 `tools/sync_upstream.py` 同步，不要手工逐文件对 diff。
+
+```bash
+python3 tools/sync_upstream.py library/{name}              # 完整同步（默认 hermes Agent 合并）
+python3 tools/sync_upstream.py library/{name} --dry-run    # 仅报告上游变更与分派，不改文件
+python3 tools/sync_upstream.py library/{name} --agent none # 不调 Agent，仅列待合并项
+python3 tools/sync_upstream.py library/{name} --init       # 无基线时记录当前上游 HEAD 为初始基线
+```
+
+## 工作方式
+
+1. 解析项目 AGENTS.md（上游仓库/分支/上次同步 commit + 映射表）
+2. GitHub compare API diff 基线 → 上游 HEAD
+3. 按映射表分派：`1:1 拷贝` 自动覆盖（先校验本地未被修改，有本地改动则转 Agent）；`拆分/重写` 交给 Agent 合并（补丁 + 项目上下文打包成任务文件）
+4. 校验：只允许项目目录内变更、bash -n、模板无 registry 前缀、build.py --dry-run 通过
+5. 全部通过才写回「上次同步 commit」；任何失败基线不动，重跑可复得同一份 diff
+
+## 注意
+
+- 无 git 上游的项目（alpine/debian）自动跳过
+- AGENTS.md「上次同步 commit」为"未记录"时先 `--init` 建基线，绝不盲目覆盖
+- 同步产生的模板改动务必实际构建验证（脚本校验不含 docker 构建；Agent 通常会自跑 `--test`，检查其日志）
+- 上游补丁范围外的历史差异（基线内就存在的漂移）脚本发现不了，需定期人工对齐
+
+---
+
 # 项目 AGENTS.md 模板规范
 
 ## 位置与目的
