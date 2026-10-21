@@ -6,7 +6,7 @@
 |------|-----|
 | 仓库 | https://github.com/docker-library/httpd |
 | 分支 | master |
-| 上次同步 commit | 未记录（历史迁移未保存，下次同步时补记） |
+| 上次同步 commit | c5248004fec9 |
 | 上游渲染方式 | update.sh 直接 sed 改成品 Dockerfile 中的版本号 |
 
 ## 映射表

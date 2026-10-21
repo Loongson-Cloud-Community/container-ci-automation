@@ -19,7 +19,7 @@ else
     json='{}'
 fi
 
-alpine='3.22'
+alpine='3.24'
 debian='forky'
 
 # 获取 sha256
