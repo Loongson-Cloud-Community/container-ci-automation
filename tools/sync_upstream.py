@@ -315,23 +315,35 @@ def build_task_file(meta: ProjectMeta, head: str, candidates: list, out_dir: Pat
 
 
 def run_agent(agent: str, task_file: Path, log_file: Path) -> bool:
+    import time
     prompt = (
         f"读取 {task_file} 并严格按其要求执行上游同步任务。"
         f"先读仓库根 AGENTS.md 了解文档结构，再读 docs/01 的关键约束与 docs/02 的模板规范，然后动手。"
     )
     cmd = [c.format(prompt=prompt) for c in AGENT_BACKENDS[agent]]
-    info(f"调用 Agent [{agent}]: {shlex.join(cmd[:3])}…（日志: {log_file}）")
+    info(f"调用 Agent [{agent}]: {shlex.join(cmd[:3])}…")
+    info(f"  通常需 5~20 分钟；进度看 `git status` 与 {task_file.parent}"
+         f"（agent.log 块缓冲，进程退出前保持 0 字节，不是卡住）")
     with open(log_file, "w") as logf:
         try:
-            r = subprocess.run(cmd, stdout=logf, stderr=subprocess.STDOUT, timeout=3600)
-        except subprocess.TimeoutExpired:
-            warn("Agent 执行超时（3600s）")
-            return False
+            proc = subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT)
         except FileNotFoundError:
             warn(f"Agent 命令不存在: {cmd[0]}")
             return False
-    if r.returncode != 0:
-        warn(f"Agent 退出码 {r.returncode}，日志: {log_file}")
+        start = time.monotonic()
+        next_beat = 60
+        while proc.poll() is None:
+            time.sleep(10)
+            el = int(time.monotonic() - start)
+            if el >= next_beat:
+                info(f"  Agent 运行中… {el // 60} 分钟")
+                next_beat += 60
+            if el >= 3600:
+                proc.kill()
+                warn("Agent 执行超时（3600s），已终止")
+                return False
+    if proc.returncode != 0:
+        warn(f"Agent 退出码 {proc.returncode}，日志: {log_file}")
         return False
     return True
 
