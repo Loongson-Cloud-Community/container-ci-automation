@@ -20,7 +20,7 @@
 
 import argparse
 import base64
-import json
+import os
 import re
 import shlex
 import subprocess
@@ -32,8 +32,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 # 可扩展的 Agent 后端：命令模板。{prompt} 为提示词，工作目录固定为仓库根。
+# chat --oneshot 在非 TTY 下问答即退，且活动实时流式输出到 stdout。
 AGENT_BACKENDS = {
-    "hermes": ["hermes", "-z", "{prompt}", "--in", str(ROOT), "--yolo"],
+    "hermes": ["hermes", "chat", "-q", "{prompt}", "--oneshot", "--yolo", "--in", str(ROOT)],
 }
 
 RELATION_INFO_SKIP = ("运行时依赖",)   # 映射表标注这类关系的行不参与比对
@@ -315,127 +316,65 @@ def build_task_file(meta: ProjectMeta, head: str, candidates: list, out_dir: Pat
     return task_file
 
 
-def _agent_db():
-    """hermes 会话库（只读）；失败返回 None（实时日志降级为心跳）"""
-    import sqlite3
-    db = Path.home() / ".hermes/state.db"
-    if not db.exists():
-        return None
-    try:
-        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=2)
-        con.row_factory = sqlite3.Row
-        return con
-    except Exception:
-        return None
-
-
-def _one_line(s: str, n: int = 160) -> str:
-    s = " ".join(s.split())
-    return s if len(s) <= n else s[:n] + "…"
-
-
-def _fmt_agent_msg(row) -> str | None:
-    """把 messages 表的一行转成一行可读活动日志；无需展示返回 None"""
-    try:
-        role = row["role"]
-        if role == "assistant":
-            tc = row["tool_calls"] or ""
-            if tc:
-                calls = json.loads(tc)
-                parts = []
-                for c in calls[:3]:
-                    fn = c.get("function", {})
-                    args = _one_line(fn.get("arguments", ""), 70)
-                    parts.append(f"{fn.get('name', '?')}({args})")
-                return f"调用 {', '.join(parts)}"
-            content = (row["content"] or "").strip()
-            return f"说: {_one_line(content)}" if content else None
-        if role == "tool":
-            name = row["tool_name"] or "tool"
-            content = (row["content"] or "").strip()
-            extra = ""
-            try:
-                data = json.loads(content)
-                if isinstance(data, dict) and data.get("exit_code") not in (None, 0):
-                    extra = f" exit={data['exit_code']}"
-            except Exception:
-                pass
-            return f"{name} 完成{extra}"
-    except Exception:
-        return None
-    return None
-
-
-def _tail_agent_messages(con, session_id: str, last_id: int) -> tuple[list, int]:
-    """取该会话 last_id 之后的新消息，返回 (展示行, 新 last_id)"""
-    rows = con.execute(
-        "SELECT id, role, content, tool_name, tool_calls FROM messages "
-        "WHERE session_id = ? AND id > ? ORDER BY id LIMIT 30",
-        (session_id, last_id),
-    ).fetchall()
-    lines = [s for s in (_fmt_agent_msg(r) for r in rows) if s]
-    new_last = rows[-1]["id"] if rows else last_id
-    return lines, new_last
-
-
 def run_agent(agent: str, task_file: Path, log_file: Path) -> bool:
+    """调用 Agent 并把其 stdout 活动实时转发到本进程 stdout，同时 tee 到日志文件"""
+    import select
     import time
     prompt = (
         f"读取 {task_file} 并严格按其要求执行上游同步任务。"
         f"先读仓库根 AGENTS.md 了解文档结构，再读 docs/01 的关键约束与 docs/02 的模板规范，然后动手。"
     )
     cmd = [c.format(prompt=prompt) for c in AGENT_BACKENDS[agent]]
-    info(f"调用 Agent [{agent}]: {shlex.join(cmd[:3])}…")
-    info(f"  预计 5~20 分钟；下方实时输出 Agent 活动，完整输出见 {log_file}")
-    with open(log_file, "w") as logf:
-        try:
-            proc = subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT)
-        except FileNotFoundError:
-            warn(f"Agent 命令不存在: {cmd[0]}")
-            return False
+    info(f"调用 Agent [{agent}]: {shlex.join(cmd[:5])}…")
+    info(f"  预计 5~20 分钟；下方为 Agent 实时输出，完整日志 {log_file}")
+    env = {**os.environ, "PYTHONUNBUFFERED": "1"}  # 子进程不块缓冲，保证流式
+    try:
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1, env=env,
+        )
+    except FileNotFoundError:
+        warn(f"Agent 命令不存在: {cmd[0]}")
+        return False
+    out = proc.stdout
+    if out is None:
+        proc.kill()
+        warn("无法建立 Agent 输出管道")
+        return False
 
-        # 实时日志：只读尾随 hermes 会话库中本次嵌套会话的新消息；失败降级为心跳
-        db_since = time.time() - 5
-        session_id = last_id = None
-        con = _agent_db()
-        next_beat = 60
-        start = time.monotonic()
-        while proc.poll() is None:
-            time.sleep(5)
-            if con is not None:
-                try:
-                    if session_id is None:
-                        row = con.execute(
-                            "SELECT id FROM sessions WHERE started_at >= ? "
-                            "ORDER BY started_at LIMIT 1",
-                            (db_since,),
-                        ).fetchone()
-                        if row:
-                            session_id = row["id"]
-                            info(f"  [agent] 会话 {session_id}，实时日志已连接")
-                            last_id = con.execute(
-                                "SELECT coalesce(max(id), 0) AS m FROM messages "
-                                "WHERE session_id = ?",
-                                (session_id,),
-                            ).fetchone()["m"]
-                    elif last_id is not None:
-                        lines, last_id = _tail_agent_messages(con, session_id, last_id)
-                        for ln in lines:
-                            info(f"  [agent] {ln}")
-                except Exception:
-                    con.close()
-                    con = None
-                    warn("  [agent] 实时日志断开（会话库不可读），降级为心跳")
-            el = int(time.monotonic() - start)
-            if el >= next_beat:
-                info(f"  Agent 运行中… {el // 60} 分钟")
-                next_beat += 60
+    def emit(raw: str, logf):
+        logf.write(raw)
+        for ln in raw.splitlines():
+            if ln.strip():
+                info(f"  [agent] {ln}")
+
+    start = time.monotonic()
+    next_beat = 60
+    last_out = time.monotonic()
+    with open(log_file, "w") as logf:
+        while True:
+            if proc.poll() is not None:
+                rest = out.read()  # 进程已退出，排空管道
+                if rest:
+                    emit(rest, logf)
+                break
+            r, _, _ = select.select([out], [], [], 5.0)
+            if r:
+                line = out.readline()
+                if line == "":
+                    time.sleep(0.2)   # EOF 临界，避免忙等
+                    continue
+                emit(line, logf)
+                last_out = time.monotonic()
+            el = time.monotonic() - start
+            # 心跳只在安静期打印：有实时输出时不必额外提示
+            if el >= next_beat and time.monotonic() - last_out >= 60:
+                info(f"  Agent 运行中… {int(el) // 60} 分钟（等待模型响应）")
+                next_beat = int(el) + 60
             if el >= 3600:
                 proc.kill()
                 warn("Agent 执行超时（3600s），已终止")
                 return False
-        if con is not None:
-            con.close()
 
     if proc.returncode != 0:
         warn(f"Agent 退出码 {proc.returncode}，日志: {log_file}")
