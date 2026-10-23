@@ -34,6 +34,10 @@ RUN set -eux; \
             rustArch='powerpc64le-unknown-linux-musl'; \
             rustupSha256='{SHA256_PPC64LE_MUSL}'; \
             ;; \
+        'riscv64') \
+            rustArch='riscv64gc-unknown-linux-musl'; \
+            rustupSha256='{SHA256_RISCV64_MUSL}'; \
+            ;; \
         'loongarch64') \
             rustArch='loongarch64-unknown-linux-musl'; \
             rustupSha256='{SHA256_LOONGARCH64_MUSL}'; \

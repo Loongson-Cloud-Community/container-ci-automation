@@ -1,62 +1,50 @@
 # node
 
-## 上游
+## 上游信息
 
-- **仓库**: https://github.com/nodejs/docker-node
-- **当前版本**: 26.5.1
-- **版本来源**: unofficial-builds.nodejs.org
+| 字段 | 值 |
+|------|-----|
+| 仓库 | https://github.com/nodejs/docker-node |
+| 分支 | main |
+| 上次同步 commit | 未记录（历史迁移未保存，下次同步时补记） |
+| 上游渲染方式 | update.sh（gawk），动态生成架构 case 语句 |
 
-## 上游结构
+## 映射表
 
-```
-Dockerfile-debian.template    # Debian 全量镜像模板
-Dockerfile-alpine.template    # Alpine 镜像模板
-Dockerfile-slim.template      # Debian slim 镜像模板
-update.sh                     # gawk 渲染，动态生成架构 case 语句
-versions.json                 # 版本和变体配置
-keys/node.keys                # GPG 公钥
-docker-entrypoint.sh          # 容器入口脚本
-```
+| 上游路径 | 本地路径 | 关系 |
+|----------|----------|------|
+| Dockerfile-debian.template | template/Dockerfile-debian.template | 拆分/重写 |
+| Dockerfile-slim.template | template/Dockerfile-debian-slim.template | 拆分/重写 |
+| Dockerfile-alpine.template | template/Dockerfile-alpine.template | 拆分/重写（变体已禁用） |
+| update.sh | template/update.sh | 重写（bash + jq） |
+| apply-templates.sh | template/apply-templates.sh | 重写（jq 提取 + sed/python 替换） |
+| keys/node.keys | update.sh 运行时从上游仓库实时获取 | 运行时依赖 |
+| docker-entrypoint.sh | template/docker-entrypoint.sh | 1:1 拷贝 |
 
-## 本地映射
+## 改动清单
 
-| 上游 | 本地 | 说明 |
-|------|------|------|
-| `Dockerfile-debian.template` | `template/Dockerfile-debian.template` | 使用预编译 loong64 二进制（unofficial-builds） |
-| `Dockerfile-slim.template` | `template/Dockerfile-debian-slim.template` | 使用预编译 loong64 二进制（unofficial-builds） |
-| `Dockerfile-alpine.template` | `template/Dockerfile-alpine.template` | 从源码编译（无 loong64 musl 二进制） |
-| `update.sh` | `template/update.sh` | bash + jq，获取 GPG keys 和 SHA256 |
-| `apply-templates.sh` | `template/apply-templates.sh` | jq 提取 + sed 渲染 |
-| `keys/node.keys` | `template/update.sh` 运行时获取 | 从上游仓库实时获取 |
+- 二进制来源: Debian 变体改用 unofficial-builds.nodejs.org 的 loong64 glibc 预编译二进制（官方 nodejs.org 无 loong64）
+- 模板: 移除上游多架构 case，仅保留 loong64 路径；下载 URL 指向 unofficial-builds
+- 基础镜像: 版本值集中在 template/update.sh；FROM 保持上游通用形式
+- 变体: alpine 已从 config.yml 移除（见已知问题）
 
-## 模板变量
+## 变量表
 
-| 变量 | 来源 | 说明 |
-|------|------|------|
-| `{VERSION}` | update.sh | Node.js 完整版本号（如 26.5.1） |
-| `{NODE_KEYS}` | update.sh | GPG 公钥列表（多行，从上游 keys/node.keys 获取） |
-| `{LOONG64_SHA256}` | update.sh | loong64 glibc 二进制的 SHA256（仅 Debian 变体使用） |
-| `{DEBIAN_VERSION}` | update.sh | Debian 版本（如 forky） |
-| `{ALPINE_VERSION}` | update.sh | Alpine 版本（如 3.24） |
+| 占位符 | 来源 | 说明 |
+|--------|------|------|
+| {LOONG64_SHA256} | update.sh | unofficial-builds loong64 glibc 二进制校验和 |
+| {NODE_KEYS} | update.sh | GPG 公钥列表（多行，来自上游 keys/node.keys） |
+| {BUILD_DEPS} | apply-templates.sh | 预计算的构建依赖块（按变体不同） |
+| {YARN_SECTION} | apply-templates.sh | 预计算的 Yarn 安装块（Node 26+ 已无） |
+| {DEBIAN_VERSION} / {ALPINE_VERSION} | update.sh | 基础镜像版本 |
 
-## 架构说明
+## 上游同步清单
 
-- **Debian 变体**: 使用 unofficial-builds.nodejs.org 的预编译 loong64 glibc 二进制
-- **Alpine 变体**: 从源码编译（unofficial-builds 没有 loong64 musl 二进制）
-- 所有变体只支持 loong64 架构
-
-## 上游更新时的调整步骤
-
-1. 对比上游 `Dockerfile-debian.template` 和本地模板
-2. 合并上游变更，保留 `{VAR}` 占位符
-3. 检查是否有新增的环境变量需要添加为模板变量
-4. 检查 GPG 公钥是否变更（update.sh 从上游实时获取）
-5. 检查 Yarn 版本是否变更
-6. Node 26+ 移除了 Yarn v1，如上游有变更需同步
+1. 检查 GPG 公钥是否变更（update.sh 实时获取，一般自动跟随）
+2. Node 26+ 移除 Yarn v1，上游若有 Yarn 相关变更需同步到 {YARN_SECTION}
+3. 新大版本确认 unofficial-builds 是否已放出 loong64 二进制（可能滞后）
 
 ## 已知问题
 
-- Node.js 官方（nodejs.org）没有 loong64 预编译二进制
-- unofficial-builds.nodejs.org 有 loong64 glibc 二进制，但版本可能滞后
-- Alpine 变体需要从源码编译，构建时间较长
-- **Alpine 源码编译失败**（2026-08-04）— 从源码编译 Node.js on Alpine loong64 报错，已暂时在 config.yml 中注释掉 Alpine 变体，待排查修复
+- unofficial-builds.nodejs.org 的 loong64 二进制发布可能滞后于官方版本
+- alpine 变体无法构建（loong64 无 musl 预编译二进制，源码编译失败，2026-08-04 起从 config.yml 移除，待排查）

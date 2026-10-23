@@ -1,74 +1,54 @@
 # ruby
 
-## 上游
+## 上游信息
 
-- **仓库**: https://github.com/docker-library/ruby
-- **当前版本**: 3.3.12, 3.4.10, 4.0.6
-- **活跃版本**: 3.3, 3.4, 4.0
-- **构建方式**: 从源码编译（Ruby 官方只提供源码 tarball）
+| 字段 | 值 |
+|------|-----|
+| 仓库 | https://github.com/docker-library/ruby |
+| 分支 | master |
+| 上次同步 commit | cb7ae85544be |
+| 上游渲染方式 | jq-template.awk（gawk），模板含复杂条件逻辑 |
 
-## 上游结构
+## 映射表
 
-```
-Dockerfile.template    # jq-template.awk 语法，含复杂条件逻辑
-versions.sh            # 从 ruby-lang.org releases.yml 获取版本
-versions.json          # versions.sh 生成的版本数据
-apply-templates.sh     # gawk + jq-template.awk 渲染
-update.sh              # 调用 versions.sh + apply-templates.sh
-rust.json              # rustup 二进制信息（per-arch）
-```
+| 上游路径 | 本地路径 | 关系 |
+|----------|----------|------|
+| Dockerfile.template | template/Dockerfile-debian.template | 拆分 |
+| 同上 | template/Dockerfile-debian-slim.template | 拆分 |
+| 同上 | template/Dockerfile-alpine.template | 拆分 |
+| versions.sh | template/update.sh | 重写（bash + wget + python3/yaml） |
+| apply-templates.sh | template/apply-templates.sh | 重写（jq 提取 + sed/awk 渲染） |
+| rust.json | template/update.sh 内嵌处理 | 重写（loong64 不在其中，case 为空） |
 
-## 本地映射
+> 上游根目录的 `update.sh`（仅串联 versions.sh + apply-templates.sh）、`rust.sh`（生成 rust.json 的维护脚本）、`generate-stackbrew-library.sh`、`README.md`、`versions.json` 及 `3.3/3.4/4.0/4.1-rc/` 成品目录：均为上游仓库维护脚本与生成物，与本地构建链路无关，不映射（2026-10 目录核对结论）。
 
-| 上游 | 本地 | 说明 |
-|------|------|------|
-| `Dockerfile.template` | `template/Dockerfile-debian.template` | Debian 全量镜像 |
-| 同上 | `template/Dockerfile-debian-slim.template` | Debian slim 镜像 |
-| 同上 | `template/Dockerfile-alpine.template` | Alpine 镜像 |
-| `versions.sh` | `template/update.sh` | 从 ruby-lang.org 获取 checksum |
-| `apply-templates.sh` | `template/apply-templates.sh` | sed + awk 渲染 |
+## 改动清单
 
-## 模板变量
+- 模板: 上游单模板按变体拆为 3 个独立模板，移除 awk 条件逻辑，条件块由 apply-templates.sh 预计算
+- 基础镜像: 值集中在 template/update.sh（debian=forky，alpine=3.24）；FROM 保持上游通用形式
+- 架构: loong64 不在上游 rust.json 中 → rustArch 为空，YJIT/ZJIT 不启用
+- 逻辑保留: Alpine thread-stack-fix 补丁（仅 alpine 变体）
+- 安全加固: 三个模板 configure 前加 `export LDFLAGS='-Wl,-z,relro -Wl,-z,now'`（full RELRO，上游 docker-library/ruby#529，本次同步合入）
 
-| 变量 | 来源 | 说明 |
-|------|------|------|
-| `{VERSION}` | update.sh | Ruby 完整版本号（如 3.3.12） |
-| `{RUBY_DOWNLOAD_URL}` | update.sh | xz 下载链接 |
-| `{RUBY_DOWNLOAD_SHA256}` | update.sh | xz 文件的 SHA256 |
-| `{POST}` | update.sh | 发布博文路径 |
-| `{RUST_VERSION}` | update.sh | Rust 版本号（用于 rustup） |
-| `{DEBIAN_VERSION}` | update.sh | Debian 版本（forky） |
-| `{ALPINE_VERSION}` | update.sh | Alpine 版本（3.24） |
+## 变量表
 
-## 变体说明
+| 占位符 | 来源 | 说明 |
+|--------|------|------|
+| {RUBY_DOWNLOAD_URL} | update.sh | 源码 tar.xz 下载链接 |
+| {RUBY_DOWNLOAD_SHA256} | update.sh | tar.xz 校验和 |
+| {POST} | update.sh | 发布博文路径 |
+| {RUST_VERSION} | update.sh | rustup 相关 Rust 版本 |
+| {RUSTUP_CASES} / {RUSTUP_CASES_ALPINE} | apply-templates.sh | 预计算的架构 case 块 |
+| {BLOCK_ZJIT} | apply-templates.sh | 4.0+ 的 ZJIT 编译块（3.x 为空） |
+| {DEBIAN_VERSION} / {ALPINE_VERSION} | update.sh | 基础镜像版本 |
 
-| 变体 | 模板 | 特点 |
-|------|------|------|
-| debian | Dockerfile-debian.template | 全量镜像，基于 buildpack-deps |
-| debian-slim | Dockerfile-debian-slim.template | 精简镜像，基于 debian:*-slim |
-| alpine | Dockerfile-alpine.template | 最小镜像，含 thread-stack-fix 补丁 |
+## 上游同步清单
 
-> 基础镜像版本（如 forky、3.24）不体现在变体名中，仅在 update.sh 作为变量管理。
+1. 上游 Dockerfile.template 有新条件逻辑时，在 apply-templates.sh 预计算新块
+2. rust.json 有新增架构时，检查 rustArch case 是否需要补 loong64（当前决定不启用）
+3. 新大版本行为：3.x 仅 YJIT，4.0+ 为 YJIT + ZJIT，同步时核对
+4. 上游根目录新增文件时核对是否属于构建链路（维护脚本/生成物不映射，见映射表备注）
 
-## LoongArch64 特殊处理
+## 已知问题
 
-- **无 Rust/YJIT/ZJIT**: loong64 不在 rust.json 中，case statement 为空，`rustArch` 保持空，YJIT/ZJIT 不启用
-- **Alpine thread-stack-fix**: 保留上游补丁（仅 alpine 变体）
-- **autoconf + dpkg-architecture**: alpine 变体也使用 `dpkg-dev dpkg` 进行架构检测
-
-## 版本特殊处理
-
-- **3.3, 3.4**: 仅 YJIT（`${rustArch:+--enable-yjit}`）
-- **4.0+**: YJIT + ZJIT（`${rustArch:+--enable-zjit}`）
-
-## 上游更新时的调整步骤
-
-1. 对比上游 `Dockerfile.template` 和本地模板
-2. 如有新增条件逻辑，在 apply-templates.sh 中预计算新块
-3. 如有新增架构支持，更新 rust.json 映射
-
-## 构建
-
-```bash
-python3 tools/build.py library/ruby
-```
+- 无未解决问题（构建正常）
