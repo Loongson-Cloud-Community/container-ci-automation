@@ -81,24 +81,26 @@ fi
 echo "SHA256: ${SHA256:-unknown}" >&2
 
 # === 确定 GPG key ===
+# 与上游 should_pgp（3.11/3.12/3.13）及 GPG_KEY 映射一致：
 # 3.10, 3.11: Pablo Galindo Salgado
-# 3.12: Thomas Wouters
-# 3.13+: 无 GPG 验证（PEP 761）
+# 3.12, 3.13: Thomas Wouters
+# 3.14+: 无 GPG 验证（PEP 761）
+# 注: 上游 109436bfb 因 EOL 删除了 3.10，本地仍构建 3.10，按删除前的上游映射保留
 GPG_KEY=""
 case "$MAJOR_MINOR" in
     3.10|3.11)
         GPG_KEY="A035C8C19219BA821ECEA86B64E628F8D684696D"
         ;;
-    3.12)
+    3.12|3.13)
         GPG_KEY="7169605F62C751356D054A26A821E680E5FA6305"
         ;;
     *)
-        # 3.13+ 不需要 GPG 验证
+        # 3.14+ 不需要 GPG 验证（PEP 761）
         ;;
 esac
 
 # === 确定 setuptools 版本 ===
-# 仅 3.10, 3.11 需要 setuptools
+# 仅 3.10, 3.11 需要 setuptools（上游 109436bfb 后仅剩 3.11，3.10 为本地保留）
 SETUPTOOLS_VERSION=""
 case "$MAJOR_MINOR" in
     3.10|3.11)

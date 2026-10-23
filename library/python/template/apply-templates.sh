@@ -83,7 +83,7 @@ rm -f "$BLOCKS_DIR"/*.txt
 # 初始化所有块为空文件（条件逻辑只覆盖需要有内容的块）
 for block in BLOCK_ENV_LANG BLOCK_GPG_VERIFY BLOCK_ENV_SHA256 BLOCK_ENV_SHA256_CHECK \
              BLOCK_GPG_DOWNLOAD BLOCK_SETUPTOOLS BLOCK_ALPINE_BUILD_DEPS \
-             BLOCK_DEBIAN_ZSTD BLOCK_DEBIAN_BUILD_DEPS BLOCK_DEBIAN_CLEANUP BLOCK_MAKE_FLAGS; do
+             BLOCK_DEBIAN_ZSTD BLOCK_DEBIAN_MPDEC BLOCK_DEBIAN_BUILD_DEPS BLOCK_DEBIAN_CLEANUP BLOCK_MAKE_FLAGS; do
     : > "$BLOCKS_DIR/${block}.txt"
 done
 
@@ -184,21 +184,31 @@ FPEOF
 FPEOF
 fi
 
-# Debian zstd-dev: 仅 3.14+
+# Debian zstd-dev: 仅 3.14+（debian-slim 变体）
 if [[ "$MINOR" -ge 14 ]]; then
-    printf '\t\tlibzstd-dev \\\n' > "$BLOCKS_DIR/BLOCK_DEBIAN_ZSTD.txt"
+    printf '		libzstd-dev \\\n' > "$BLOCKS_DIR/BLOCK_DEBIAN_ZSTD.txt"
 fi
 
-# Debian build deps: 仅 3.14+ (libzstd-dev)
+# Debian mpdec: 仅 3.15+（debian-slim 变体；上游 ce73ea7ce，issue #1136）
+# 上游 bookworm 分支改用 --without-system-libmpdec，本地 Debian 固定 forky，走安装 libmpdec-dev 分支
+if [[ "$MINOR" -ge 15 ]]; then
+    printf '		libmpdec-dev \\\n' > "$BLOCKS_DIR/BLOCK_DEBIAN_MPDEC.txt"
+fi
+
+# Debian build deps（全量 debian 变体）: 3.14+ 起 libzstd-dev，3.15+ 另加 libmpdec-dev
+# 条目顺序与上游 build_deps 排序一致（libmpdec-dev < libzstd-dev）；g++/gcc 等由 buildpack-deps 提供
 if [[ "$MINOR" -ge 14 ]]; then
-    cat > "$BLOCKS_DIR/BLOCK_DEBIAN_BUILD_DEPS.txt" << 'BDEOF'
-	savedAptMark="$(apt-mark showmanual)"; \
-	apt-get update; \
-	apt-get install -y --no-install-recommends \
-		libzstd-dev \
-	; \
-	\
-BDEOF
+    {
+        printf '	savedAptMark="$(apt-mark showmanual)"; \\\n'
+        printf '	apt-get update; \\\n'
+        printf '	apt-get install -y --no-install-recommends \\\n'
+        if [[ "$MINOR" -ge 15 ]]; then
+            printf '		libmpdec-dev \\\n'
+        fi
+        printf '		libzstd-dev \\\n'
+        printf '	; \\\n'
+        printf '	\\\n'
+    } > "$BLOCKS_DIR/BLOCK_DEBIAN_BUILD_DEPS.txt"
 fi
 
 # Debian cleanup: 仅当有 build deps 时（3.14+ 有 libzstd-dev）
@@ -229,10 +239,12 @@ CEOF
 fi
 
 # Alpine build dependencies
+# 条目顺序与上游 build_deps 排序一致（故输出前用 LC_ALL=C sort）
 alpine_deps_base="bluez-dev
 bzip2-dev
 dpkg-dev dpkg
 findutils
+g++
 gcc
 gdbm-dev
 gnupg
@@ -256,11 +268,16 @@ xz
 xz-dev
 zlib-dev"
 alpine_deps="$alpine_deps_base"
+if [[ "$MINOR" -ge 15 ]]; then
+    # 3.15+ 需要 mpdecimal-dev（上游 ce73ea7ce，issue #1136）
+    alpine_deps="${alpine_deps}
+mpdecimal-dev"
+fi
 if [[ "$MINOR" -ge 14 ]]; then
     alpine_deps="${alpine_deps}
 zstd-dev"
 fi
-echo "$alpine_deps" | while IFS= read -r dep; do
+echo "$alpine_deps" | LC_ALL=C sort | while IFS= read -r dep; do
     [[ -n "$dep" ]] && printf '\t\t%s \\\n' "$dep"
 done > "$BLOCKS_DIR/BLOCK_ALPINE_BUILD_DEPS.txt"
 
