@@ -1,0 +1,21 @@
+# library/redis/config.yml
+project:
+  org: library
+  name: redis
+
+version_source:
+  type: script
+  script: get_versions.sh
+
+variants:
+  - name: "debian"
+    template: "Dockerfile-debian.template"
+    tags:
+      - "{version}"
+      - "{minor_version}"
+      - "latest"
+  - name: "alpine"
+    template: "Dockerfile-alpine.template"
+    tags:
+      - "{version}-alpine"
+      - "{minor_version}-alpine"
