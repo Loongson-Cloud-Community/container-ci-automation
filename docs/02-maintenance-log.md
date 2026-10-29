@@ -1,7 +1,7 @@
-# 03 — AI 维护记录（追加式日志）
+# 维护记录（追加式日志）
 
 > 记录「遇到过什么问题 → 根因 → 怎么修 → 适用范围 → commit」。
-> 结构定义见 `01-project-structure.md`，操作流程见 `02-add-project.md`。
+> 结构定义见 `01-project-structure.md`
 
 ## 写入约定
 
