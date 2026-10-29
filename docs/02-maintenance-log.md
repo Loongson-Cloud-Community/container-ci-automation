@@ -167,3 +167,10 @@
 - 修复: 在 shell 里做 `library::alpine` → `library/alpine` 的转换。
 - 适用范围: CI
 - commit: `386a672`
+
+### 2026-10-28 library/rabbitmq — 最终镜像缺 libatomic.so.1，beam.smp 无法启动
+- 现象: debian 变体最终阶段 `erl` 冒烟测试报 `beam.smp: error while loading shared libraries: libatomic.so.1: cannot open shared object file`
+- 根因: loong64 的 Erlang/OTP 运行时链接 libatomic；构建阶段（build-base 装 build-essential）连带安装了它所以 erlang-builder 通过，但最终镜像是干净 debian:forky，未安装 libatomic1。上游 amd64/arm64 的 beam.smp 不链接 libatomic，故上游无此问题
+- 修复: 最终阶段第一个 RUN 顶部（erl 冒烟测试之前）apt 安装 `libatomic1`（template/Dockerfile-debian.template）。alpine 变体无需处理——其 final 阶段 scanelf runDeps 自动扫描出 so:libatomic.so.1
+- 适用范围: library/rabbitmq（其他项目最终镜像基础含 build-essential 链或 buildpack-deps，不受影响）
+- commit: 本次提交

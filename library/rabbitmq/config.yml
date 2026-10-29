@@ -1,0 +1,38 @@
+# library/rabbitmq/config.yml
+project:
+  org: library
+  name: rabbitmq
+
+version_source:
+  type: script
+  script: get_versions.sh
+
+variants:
+  - name: "debian"
+    template: "Dockerfile-debian.template"
+    tags:
+      - "{version}"
+      - "{minor_version}"
+      - "{major_version}"
+      - "latest"
+  - name: "management"
+    template: "Dockerfile-management.template"
+    tags:
+      - "{version}-management"
+      - "{minor_version}-management"
+      - "{major_version}-management"
+      - "management"
+  - name: "alpine"
+    template: "Dockerfile-alpine.template"
+    tags:
+      - "{version}-alpine"
+      - "{minor_version}-alpine"
+      - "{major_version}-alpine"
+      - "alpine"
+  - name: "alpine-management"
+    template: "Dockerfile-alpine-management.template"
+    tags:
+      - "{version}-management-alpine"
+      - "{minor_version}-management-alpine"
+      - "{major_version}-management-alpine"
+      - "management-alpine"

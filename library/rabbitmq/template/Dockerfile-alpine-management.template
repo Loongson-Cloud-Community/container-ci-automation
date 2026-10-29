@@ -1,0 +1,19 @@
+# vim:noet:
+# 管理镜像（Alpine，基于本地同版本基础镜像，上游 FROM rabbitmq:{VERSION}-alpine）
+FROM library/rabbitmq:{VERSION}-alpine
+
+RUN set -eux; \
+	rabbitmq-plugins enable --offline rabbitmq_management; \
+# make sure the metrics collector is re-enabled (disabled in the base image for Prometheus-style metrics by default)
+	rm -f /etc/rabbitmq/conf.d/20-management_agent.disable_metrics_collector.conf
+
+# rabbitmqadmin: 官方 rabbitmqadmin-ng 无 loong64 预编译二进制，
+# 采用 loongarch64-releases/rabbitmqadmin-ng 的 musl（静态链接）构建
+RUN set -eux; \
+	wget -O /usr/local/bin/rabbitmqadmin "{RABBITMQADMIN_URL}"; \
+	echo "{RABBITMQADMIN_SHA256} */usr/local/bin/rabbitmqadmin" | sha256sum -c -; \
+	\
+	chmod +x /usr/local/bin/rabbitmqadmin; \
+	rabbitmqadmin --help
+
+EXPOSE 15671 15672

@@ -1,0 +1,28 @@
+# vim:noet:
+# 管理镜像（基于本地同版本基础镜像，上游 FROM rabbitmq:{VERSION}）
+FROM library/rabbitmq:{VERSION}
+
+RUN set -eux; \
+	rabbitmq-plugins enable --offline rabbitmq_management; \
+# make sure the metrics collector is re-enabled (disabled in the base image for Prometheus-style metrics by default)
+	rm -f /etc/rabbitmq/conf.d/20-management_agent.disable_metrics_collector.conf
+
+# rabbitmqadmin: 官方 rabbitmqadmin-ng 无 loong64 预编译二进制，
+# 采用 loongarch64-releases/rabbitmqadmin-ng 的 gnu（glibc）构建
+RUN set -eux; \
+	savedAptMark="$(apt-mark showmanual)"; \
+	apt-get update; \
+	apt-get install -y --no-install-recommends ca-certificates wget; \
+	\
+	wget -O /usr/local/bin/rabbitmqadmin "{RABBITMQADMIN_URL}"; \
+	echo "{RABBITMQADMIN_SHA256} */usr/local/bin/rabbitmqadmin" | sha256sum --strict --check -; \
+	\
+	apt-mark auto '.*' > /dev/null; \
+	apt-mark manual $savedAptMark > /dev/null; \
+	apt-get purge -y --auto-remove -o APT::AutoRemove::RecommendsImportant=false; \
+	apt-get dist-clean; \
+	\
+	chmod +x /usr/local/bin/rabbitmqadmin; \
+	rabbitmqadmin --help
+
+EXPOSE 15671 15672
