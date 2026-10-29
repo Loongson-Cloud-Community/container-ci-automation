@@ -80,7 +80,8 @@ RUN set -eux; \
 		s390x) opensslMachine='linux64-s390x' ;; \
 		x86) opensslMachine='linux-x86' ;; \
 		x86_64) opensslMachine='linux-x86_64' ;; \
-		loong64) opensslMachine='linux64-loongarch64' ;; \
+# loongarch64 移植树（lcr loongnix alpine）：apk --print-arch 输出 loongarch64，与官方 loong64 树不同
+		loongarch64) opensslMachine='linux64-loongarch64' ;; \
 		*) echo >&2 "error: unsupported arch: '$apkArch'"; exit 1 ;; \
 	esac; \
 	MACHINE="$opensslMachine" \

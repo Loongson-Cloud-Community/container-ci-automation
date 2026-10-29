@@ -168,6 +168,13 @@
 - 适用范围: CI
 - commit: `386a672`
 
+### 2026-10-28 library/rabbitmq — alpine 模板 opensslMachine case 架构名写错（loong64 → loongarch64）
+- 现象: 审查时发现 alpine 模板 case 关键字 `loong64)` 永不命中——远程实测 `apk --print-arch` 输出 `loongarch64`，会掉进 `*)` 报 unsupported arch（alpine 变体尚未构建到此处，属预防性修复）
+- 根因: 本仓库 alpine 基础镜像是 loongarch64 移植树（cz.alpinelinux.org releases/loongarch64，见 library/alpine），apk 架构名为 `loongarch64`；官方 Alpine loong64 树才是 `loong64`。Debian 的 dpkg 架构名仍为 `loong64`——同一平台两套包管理器命名不同（golang 模板即按此区分：debian 'loong64' / alpine 'loongarch64'）
+- 修复: Dockerfile-alpine.template 的 case 分支 `loong64)` → `loongarch64)`；debian 模板不动
+- 适用范围: library/rabbitmq；通用经验：凡以 apk --print-arch 做架构判断的项目，loongarch64 移植树下关键字是 loongarch64
+- commit: 本次提交
+
 ### 2026-10-28 library/rabbitmq — 最终镜像缺 libatomic.so.1，beam.smp 无法启动
 - 现象: debian 变体最终阶段 `erl` 冒烟测试报 `beam.smp: error while loading shared libraries: libatomic.so.1: cannot open shared object file`
 - 根因: loong64 的 Erlang/OTP 运行时链接 libatomic；构建阶段（build-base 装 build-essential）连带安装了它所以 erlang-builder 通过，但最终镜像是干净 debian:forky，未安装 libatomic1。上游 amd64/arm64 的 beam.smp 不链接 libatomic，故上游无此问题
