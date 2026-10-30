@@ -1,0 +1,21 @@
+# library/postgres/config.yml
+project:
+  org: library
+  name: postgres
+
+version_source:
+  type: script
+  script: get_versions.sh
+
+variants:
+  - name: "debian"
+    template: "Dockerfile-debian.template"
+    tags:
+      - "{version}"
+      - "{major_version}"
+      - "latest"
+  - name: "alpine"
+    template: "Dockerfile-alpine.template"
+    tags:
+      - "{version}-alpine"
+      - "{major_version}-alpine"

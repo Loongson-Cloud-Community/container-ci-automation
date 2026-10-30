@@ -175,6 +175,13 @@
 - 适用范围: library/rabbitmq；通用经验：凡以 apk --print-arch 做架构判断的项目，loongarch64 移植树下关键字是 loongarch64
 - commit: 本次提交
 
+### 2026-10-30 library/postgres — update.sh 取元数据时 curl 报 23 秒退
+- 现象: update.sh 一开始就 `curl: (23) Failure writing output to destination`，脚本退出码 1，一行元数据都没输出。
+- 根因: `curl ... | gawk '... { print $2; exit }'` 里 awk 的 `exit` 提前关闭管道，curl 写不进去报 23；脚本 `set -o pipefail` 把 curl 的 23 计为整条管道失败，`set -e` 随即退出。
+- 修复: 先 `release="$(curl -fsSL ...)"` 取回内容，再用 here-string 喂给 awk 解析，避免管道消费者提前断管。
+- 适用范围: 所有项目的 template/*.sh（凡 `set -o pipefail` 且管道中有提前退出的消费者 awk/head/tail -n + exit）
+- commit: 本次提交
+
 ### 2026-10-28 library/rabbitmq — 最终镜像缺 libatomic.so.1，beam.smp 无法启动
 - 现象: debian 变体最终阶段 `erl` 冒烟测试报 `beam.smp: error while loading shared libraries: libatomic.so.1: cannot open shared object file`
 - 根因: loong64 的 Erlang/OTP 运行时链接 libatomic；构建阶段（build-base 装 build-essential）连带安装了它所以 erlang-builder 通过，但最终镜像是干净 debian:forky，未安装 libatomic1。上游 amd64/arm64 的 beam.smp 不链接 libatomic，故上游无此问题
