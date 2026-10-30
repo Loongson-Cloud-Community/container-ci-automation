@@ -99,7 +99,7 @@ variants:                         # 必填，至少一个
 | `{major_version}` | 主版本号 | `3` |
 | `{minor_version}` | 次版本号 | `3.24` |
 
-仅语义版本 `a.b.c` 会拆出 major/minor；其他格式（如 debian 的时间戳版本 `20250521T073957Z`）三个变量都等于原串。
+仅语义版本 `a.b.c` 与两段式 `a.b` 会拆出 major/minor（`3.24.1` → major `3` / minor `3.24`；`18.6` → major `18` / minor `18.6`）；其他格式（如 debian 的时间戳版本 `20250521T073957Z`）三个变量都等于原串。
 
 ### 模板占位符（apply-templates.sh 负责，与 tag 变量无关）
 

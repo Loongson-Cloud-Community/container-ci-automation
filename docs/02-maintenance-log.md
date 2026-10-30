@@ -182,6 +182,13 @@
 - 适用范围: 所有项目的 template/*.sh（凡 `set -o pipefail` 且管道中有提前退出的消费者 awk/head/tail -n + exit）
 - commit: 本次提交
 
+### 2026-10-30 通用 — {major_version} 对两段式版本号（a.b）失效
+- 现象: 新增 library/postgres 时 dry-run 打出 `-t library/postgres:18.6 -t library/postgres:18.6 -t library/postgres:latest`——主版本 tag 重复且没有 `18`。
+- 根因: build.py 的 compute_version_vars 只认 `a.b.c`，`18.6` 这类两段式落入兜底分支，三个变量全等于原串。
+- 修复: 正则放宽为 `^(\d+)\.(\d+)(?:\.(\d+))?$`，两段式 → major=首段、minor=原串；docs/01「tag 变量渲染」同步。回归验证（dry-run 实测）：三段式 rabbitmq/ruby 输出不变；erlang `29.1` 新增 `29` tag 且 `29.1` 仍由 {version} 提供；golang 虽是两段式但 config 未用该变量。
+- 适用范围: 所有项目（实际只影响使用 {major_version} 且版本为两段式的场景）
+- commit: 本次提交
+
 ### 2026-10-28 library/rabbitmq — 最终镜像缺 libatomic.so.1，beam.smp 无法启动
 - 现象: debian 变体最终阶段 `erl` 冒烟测试报 `beam.smp: error while loading shared libraries: libatomic.so.1: cannot open shared object file`
 - 根因: loong64 的 Erlang/OTP 运行时链接 libatomic；构建阶段（build-base 装 build-essential）连带安装了它所以 erlang-builder 通过，但最终镜像是干净 debian:forky，未安装 libatomic1。上游 amd64/arm64 的 beam.smp 不链接 libatomic，故上游无此问题

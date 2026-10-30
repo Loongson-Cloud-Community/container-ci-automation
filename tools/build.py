@@ -148,10 +148,14 @@ def update_versions_file(project_dir: Path, version: str):
 # ── 版本变量 ────────────────────────────────────────────────────────
 
 def compute_version_vars(version: str) -> dict:
-    """语义版本: 3.24.1 → major=3, minor=3.24"""
-    m = re.match(r"^(\d+)\.(\d+)\.(\d+)$", version)
+    """语义版本: 3.24.1 → major=3, minor=3.24；两段式 18.6 → major=18, minor=18.6"""
+    m = re.match(r"^(\d+)\.(\d+)(?:\.(\d+))?$", version)
     if m:
-        return {"version": version, "major_version": m.group(1), "minor_version": f"{m.group(1)}.{m.group(2)}"}
+        return {
+            "version": version,
+            "major_version": m.group(1),
+            "minor_version": f"{m.group(1)}.{m.group(2)}",
+        }
     return {"version": version, "major_version": version, "minor_version": version}
 
 
