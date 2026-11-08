@@ -51,10 +51,54 @@ formatted=$(format_time "$VERSION")
 timestamp=$(date -d "$formatted" +%s)
 
 echo "Building rootfs with debuerreotype..."
+
+# 上游 debuerreotype/debuerreotype 官方镜像只发布 linux/amd64，
+# loong64 上 docker pull 报 "no matching manifest for linux/loong64"（run 42407710865）。
+# 本机没有该镜像（或架构不符）时，从上游源码用 debian:forky（loong64）构建同名本地镜像。
+DEBUERREOTYPE_IMAGE='debuerreotype/debuerreotype:latest'
+image_arch="$(docker image inspect --format '{{.Architecture}}' "$DEBUERREOTYPE_IMAGE" 2>/dev/null || true)"
+if [ "$image_arch" != "$ARCH" ]; then
+    echo "Local $DEBUERREOTYPE_IMAGE unavailable (arch=${image_arch:-none}), building it from source..."
+    build_dir="$(mktemp -d)"
+    git clone --depth 1 https://github.com/debuerreotype/debuerreotype.git "$build_dir/src"
+
+    # 构建上下文只放运行 examples/debian.sh 需要的内容
+    ctx="$build_dir/ctx"
+    mkdir -p "$ctx"
+    cp -a "$build_dir/src/scripts" "$build_dir/src/examples" "$build_dir/src/VERSION" "$ctx/"
+
+    cat > "$ctx/Dockerfile" <<EOF
+FROM debian:$DEBIAN_VERSION_NAME
+RUN set -eux; \\
+    apt-get update; \\
+    apt-get install -y --no-install-recommends \\
+        debootstrap \\
+        wget ca-certificates \\
+        xz-utils \\
+        gnupg dirmngr \\
+        gpgv \\
+    ; \\
+    rm -rf /var/lib/apt/lists/*
+ENV WGETRC /.wgetrc
+RUN echo 'hsts=0' >> "\$WGETRC"
+ENV DEBUERREOTYPE_DIRECTORY /opt/debuerreotype
+COPY . \$DEBUERREOTYPE_DIRECTORY
+RUN set -eux; \\
+    cd "\$DEBUERREOTYPE_DIRECTORY/scripts"; \\
+    for f in debuerreotype-*; do \\
+        ln -svL "\$PWD/\$f" "/usr/local/bin/\$f"; \\
+    done
+WORKDIR /tmp
+EOF
+
+    docker buildx build --platform "linux/$ARCH" --load -t "$DEBUERREOTYPE_IMAGE" "$ctx"
+    rm -rf "$build_dir"
+fi
+
 docker run --privileged -v "$(pwd)/out":/v -w /v \
     -e https_proxy="$https_proxy" \
     -e http_proxy="$http_proxy" \
-    debuerreotype/debuerreotype:latest \
+    "$DEBUERREOTYPE_IMAGE" \
     /opt/debuerreotype/examples/debian.sh --arch "$ARCH" . "$SUITE" "@$timestamp"
 
 echo "Rootfs built successfully"
