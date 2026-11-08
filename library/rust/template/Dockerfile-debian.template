@@ -4,7 +4,23 @@
 # PLEASE DO NOT EDIT IT DIRECTLY.
 #
 
-FROM buildpack-deps:{DEBIAN_VERSION}
+FROM debian:{DEBIAN_VERSION}
+
+# 上游 buildpack-deps:forky 的 manifest 不含 linux/loong64，CI 拉取基础镜像失败；
+# 改用经镜像可拉取的 debian:forky，并补装 buildpack-deps 提供的构建工具链
+RUN set -eux; \
+    \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        build-essential \
+        ca-certificates \
+        curl \
+        git \
+        libssl-dev \
+        pkg-config \
+        wget \
+        ; \
+    rm -rf /var/lib/apt/lists/*
 
 LABEL org.opencontainers.image.source=https://github.com/rust-lang/docker-rust
 
