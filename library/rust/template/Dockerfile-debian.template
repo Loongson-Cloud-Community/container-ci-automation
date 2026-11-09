@@ -4,7 +4,10 @@
 # PLEASE DO NOT EDIT IT DIRECTLY.
 #
 
-FROM buildpack-deps:{DEBIAN_VERSION}
+FROM debian:{DEBIAN_VERSION}-slim
+# 上游为 FROM buildpack-deps:{DEBIAN_VERSION}，但其官方 manifest 不含 linux/loong64，
+# CI buildx 解析元数据确定性失败；改用本仓库可提供 loong64 的 debian 基础镜像，
+# 并在下方 RUN 显式安装 buildpack-deps 提供的构建工具链。
 
 LABEL org.opencontainers.image.source=https://github.com/rust-lang/docker-rust
 
@@ -14,6 +17,15 @@ ENV RUSTUP_HOME=/usr/local/rustup \
     RUST_VERSION={VERSION}
 
 RUN set -eux; \
+    \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        build-essential \
+        ca-certificates \
+        git \
+        wget \
+        ; \
+    rm -rf /var/lib/apt/lists/*; \
     \
     arch="$(dpkg --print-architecture)"; \
     case "$arch" in \
