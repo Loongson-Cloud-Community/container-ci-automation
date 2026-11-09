@@ -51,10 +51,23 @@ formatted=$(format_time "$VERSION")
 timestamp=$(date -d "$formatted" +%s)
 
 echo "Building rootfs with debuerreotype..."
+
+# 上游 debuerreotype/debuerreotype 仅发布 linux/amd64 manifest，loong64 上
+# docker pull/run 报 "no matching manifest"（exit 125）；根 config.yml 的
+# registry 提供 loong64 构建。本地已有 loong64 缓存则直接用（免网络），
+# 否则改用 registry 前缀镜像，不依赖宿主 daemon 是否配置 registry-mirrors。
+DBR_IMAGE="debuerreotype/debuerreotype:latest"
+registry=$(sed -n 's/^registry:[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}[[:space:]]*$/\1/p' \
+    "$(readlink -f "$PWD/../../../config.yml")" 2>/dev/null || true)
+cached_arch=$(docker image inspect --format '{{.Architecture}}' "$DBR_IMAGE" 2>/dev/null || true)
+if [ -n "$registry" ] && [ "$cached_arch" != "loong64" ]; then
+    DBR_IMAGE="$registry/$DBR_IMAGE"
+fi
+
 docker run --privileged -v "$(pwd)/out":/v -w /v \
     -e https_proxy="$https_proxy" \
     -e http_proxy="$http_proxy" \
-    debuerreotype/debuerreotype:latest \
+    "$DBR_IMAGE" \
     /opt/debuerreotype/examples/debian.sh --arch "$ARCH" . "$SUITE" "@$timestamp"
 
 echo "Rootfs built successfully"
